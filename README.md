@@ -7,8 +7,8 @@ Status comes from Claude Code hooks, not screen scraping. The hooks are loaded p
 ## Install
 
 ```bash
-npm install -g clamux      # the `clamux` command (dashboard + CLI)
-npm install clamux         # the SDK, as a dependency of your project
+npm install -g @renatex314/clamux      # the `clamux` command (dashboard + CLI)
+npm install @renatex314/clamux         # the SDK, as a dependency of your project
 ```
 
 Requires Node 20+ and the `claude` CLI on your PATH. To work on clamux itself, see Setup below.
@@ -60,7 +60,7 @@ Each session is a small detached host process (`clamux host <name>`) that owns t
 The package also exports a typed client for driving sessions from your own code:
 
 ```ts
-import { Clamux, ClamuxError } from "clamux";
+import { Clamux, ClamuxError } from "@renatex314/clamux";
 
 const cx = new Clamux();
 await cx.create("refactor", { dir: "~/projects/app" }); // detached; notify defaults to false here
