@@ -1,6 +1,7 @@
 import { ClamuxError } from "./errors.js";
 import { readStatus, snapshot, type DisplayState, type Row } from "./status.js";
 import { attachSession } from "./attach.js";
+import { lastAnswer } from "./transcript.js";
 import {
   capturePane, cleanStale, createSession, fetchScreen, forgetSession, killSession, liveSessions, pressKeys,
   resumeSession, sendPrompt, type Result,
@@ -34,7 +35,9 @@ export interface SendOptions {
 
 export interface AskResult {
   session: Session;
-  /** The visible screen after Claude finished. This is screen text, not a structured answer. */
+  /** Claude's final reply to this prompt as plain text, read from the transcript. Null if it could not be read. */
+  answer: string | null;
+  /** The visible screen after Claude finished (the whole interface, not just the reply). */
   screen: string;
   /** Claude Code's transcript file for this session, if the hooks have reported it. */
   transcriptPath: string | null;
@@ -152,7 +155,23 @@ export class Clamux {
       (s) => s.state === "idle" && (readStatus(name)?.since ?? 0) >= sentAt,
       opts,
     );
-    return { session, screen: await this.screen(name), transcriptPath: session.transcriptPath };
+    const screen = await this.screen(name);
+    // The hook that reports "idle" can fire a moment before Claude's last transcript line is flushed.
+    let answer: string | null = null;
+    for (let i = 0; i < 20 && answer === null && session.transcriptPath; i++) {
+      answer = lastAnswer(session.transcriptPath, sentAt * 1000 - 1000);
+      if (answer === null) await sleep(100);
+    }
+    return { session, answer, screen, transcriptPath: session.transcriptPath };
+  }
+
+  /**
+   * Claude's most recent reply in this session, read from its transcript (null if it has not answered yet).
+   * Unlike `screen`, this is the reply text alone, without the interface around it.
+   */
+  lastAnswer(name: string): string | null {
+    const path = this.require(name).transcriptPath;
+    return path ? lastAnswer(path) : null;
   }
 
   /** Yields every state change (including sessions appearing) until `signal` aborts. */

@@ -66,7 +66,8 @@ const cx = new Clamux();
 await cx.create("refactor", { dir: "~/projects/app" }); // detached; notify defaults to false here
 await cx.waitForIdle("refactor");                       // wait for Claude to start up
 
-const { screen, transcriptPath } = await cx.ask("refactor", "Rename foo to bar", { timeoutMs: 120_000 });
+const { answer } = await cx.ask("refactor", "Rename foo to bar", { timeoutMs: 120_000 });
+console.log(answer);                                    // Claude's final reply, as plain text
 
 for await (const change of cx.watch()) {                // every state change, until you abort
   console.log(change.name, change.from, "->", change.to);
@@ -78,7 +79,8 @@ for await (const change of cx.watch()) {                // every state change, u
 | `list()` / `get(name)` | session snapshots: `name`, `state`, `detail` (current tool), `ageS`, `cwd`, `live`, `sessionId`, `transcriptPath`, `resumable` |
 | `create(name, { dir, notify, claudeArgs })` | start a session (async) |
 | `send(name, prompt, { force })` | type a prompt; throws `BUSY` if the session is working/waiting |
-| `ask(name, prompt, opts)` | `send` then wait until Claude finishes that turn (working -> idle); returns the screen |
+| `ask(name, prompt, opts)` | `send` then wait until Claude finishes that turn (working -> idle); returns `{ session, answer, screen, transcriptPath }`, where `answer` is Claude's final reply as plain text |
+| `lastAnswer(name)` | Claude's most recent reply in the session (read from its transcript), or `null` |
 | `waitFor(name, predicate, { timeoutMs, pollMs, signal })` / `waitForIdle` | wait for a condition |
 | `press(name, ...keys)` | key names (`Enter`, `Down`, `Escape`, `C-c`, ...) or literal text, e.g. `press("x", "y")` to answer a permission prompt |
 | `screen(name)` | the exact screen right now (async) |
@@ -92,7 +94,7 @@ for await (const change of cx.watch()) {                // every state change, u
 Errors are `ClamuxError` with a `code`: `INVALID`, `EXISTS`, `NOT_FOUND`, `BUSY`, `TIMEOUT`, `ABORTED`, `HOST_FAILED`.
 
 Notes:
-- `ask()` returns the visible screen, not a structured answer. For the full conversation, read the JSONL at `transcriptPath`.
+- `answer` is the text of Claude's final reply, read from the session transcript (tool calls and earlier commentary in the same turn are left out). It is `null` if the transcript could not be read; `screen` is the whole interface as a fallback. For the full conversation, read the JSONL at `transcriptPath`.
 - If Claude stops to ask permission the session sits in `waiting`, so `ask()` will time out. Use `watch()` to notice it and `press()` to answer, or set `timeoutMs`.
 - Sessions you create stay alive after your script exits; `kill` them when done.
 - The SDK and the dashboard share the same sessions as long as they run as the same user (same home directory).
@@ -111,6 +113,6 @@ Notes:
 - `src/ipc.ts`, `src/keys.ts`, `src/notify.ts`, `src/env.ts` – protocol framing, key names, desktop notifications, environment hygiene
 - `src/tui.tsx` – the Ink dashboard (loaded lazily so hooks start fast)
 - `src/cli.ts` – entry point and subcommands
-- `src/client.ts`, `src/index.ts`, `src/errors.ts` – the SDK
+- `src/client.ts`, `src/index.ts`, `src/errors.ts`, `src/transcript.ts` – the SDK
 
 `npm run typecheck` checks types; `npm run build` bundles to `dist/` and emits type declarations; `npm test` builds and runs the SDK tests (they use a fake `claude`, an isolated `HOME` and real pseudo-terminals, so they never touch your real sessions or your subscription).

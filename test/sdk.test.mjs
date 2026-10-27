@@ -83,6 +83,8 @@ describe("Clamux SDK", () => {
 
     assert.equal(r.session.state, "idle");
     assert.match(r.screen, /answer: hello world/); // exact, with no waiting for a file refresh
+    assert.equal(r.answer, "answer: hello world"); // the reply alone, from the transcript - not the "thinking out loud" before the tool call
+    assert.equal(cx.lastAnswer("a"), "answer: hello world");
     assert.equal(r.transcriptPath, path.join(tmp, "fake.jsonl"));
     assert.ok(events.includes("idle>working"), `saw ${events}`);
     assert.ok(events.includes("working>idle"), `saw ${events}`);

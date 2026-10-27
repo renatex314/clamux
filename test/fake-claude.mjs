@@ -17,15 +17,22 @@ const hook = (event) =>
     }),
     env: process.env,
   });
+const log = (type, content) =>
+  fs.appendFileSync(transcript, JSON.stringify({ type, timestamp: new Date().toISOString(), message: { role: type, content } }) + "\n");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 hook("SessionStart");
 console.log(`ready args=${process.argv.slice(2).join(" ")}`);
 for await (const line of readline.createInterface({ input: process.stdin })) {
   hook("UserPromptSubmit");
+  log("user", line);
   hook("PreToolUse");
+  log("assistant", [{ type: "text", text: "thinking out loud" }, { type: "tool_use", name: "Bash" }]);
+  log("user", [{ type: "tool_result", content: "ok" }]);
   await sleep(Number(process.env.FAKE_WORK_MS ?? 1000));
   console.log("answer: " + line);
+  log("assistant", [{ type: "thinking", thinking: "" }]);
+  log("assistant", [{ type: "text", text: "answer: " + line }]);
   hook("PostToolUse");
   hook("Stop");
 }
