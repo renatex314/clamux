@@ -4,9 +4,16 @@ A terminal dashboard for running several Claude Code sessions side by side and s
 
 Status comes from Claude Code hooks, not screen scraping. The hooks are loaded per session with `claude --settings ~/.clamux/settings.json`, so `~/.claude/settings.json` is never touched and only sessions started through clamux report status.
 
-## Setup
+## Install
 
-Requires Node 20+ and the `claude` CLI on your PATH.
+```bash
+npm install -g clamux      # the `clamux` command (dashboard + CLI)
+npm install clamux         # the SDK, as a dependency of your project
+```
+
+Requires Node 20+ and the `claude` CLI on your PATH. To work on clamux itself, see Setup below.
+
+## Setup (from source)
 
 ```bash
 npm install
