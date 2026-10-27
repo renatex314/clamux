@@ -1,0 +1,43 @@
+{
+  "name": "clamux",
+  "version": "0.1.0",
+  "description": "Dashboard, CLI and SDK to run multiple Claude Code sessions with live working/idle status (macOS, Linux, Windows)",
+  "type": "module",
+  "bin": {
+    "clamux": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsup && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test \"test/*.test.mjs\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
+    "ink": "^8.0.0",
+    "ink-text-input": "^6.0.0",
+    "node-pty": "^1.1.0",
+    "react": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "tsup": "^8.5.1",
+    "typescript": "^7.0.2"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ]
+}
