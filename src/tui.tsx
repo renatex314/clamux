@@ -5,6 +5,7 @@ import { fmtAge, snapshot, type DisplayState, type Row } from "./status.js";
 import { attachSession } from "./attach.js";
 import {
   capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, resumeSession, sendPrompt, validName,
+  type Agent,
 } from "./sessions.js";
 
 const COLOR: Record<DisplayState, string> = {
@@ -53,6 +54,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
   const [selName, setSelName] = useState<string | undefined>(remembered);
   useEffect(() => { remembered = selName; }, [selName]);
   const [mode, setMode] = useState<Mode>({ kind: "list" });
+  const [newAgent, setNewAgent] = useState<Agent>("claude");
   const [input, setInput] = useState("");
   const [msg, setMsg] = useState("");
 
@@ -129,8 +131,12 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
     } else if (mode.kind === "confirm") {
       if (ch === "y") void mode.run();
       else if (ch === "n" || key.escape) toList("cancelled");
-    } else if (key.escape) {
-      toList("cancelled");
+    } else {
+      if (key.tab && (mode.kind === "new-name" || mode.kind === "new-dir")) {
+        setNewAgent((a) => (a === "claude" ? "agy" : "claude"));
+      } else if (key.escape) {
+        toList("cancelled");
+      }
     }
   });
 
@@ -141,10 +147,10 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
       setInput(""); setMsg(""); return setMode({ kind: "new-dir", name: v });
     }
     if (mode.kind === "new-dir") {
-      setMsg(`starting '${mode.name}'...`);
-      const r = await createSession(mode.name, v || process.cwd(), { notify: true });
+      setMsg(`starting '${mode.name}' (${newAgent})...`);
+      const r = await createSession(mode.name, v || process.cwd(), { notify: true, agent: newAgent });
       if (r.ok) setSelName(mode.name);
-      toList(r.ok ? `started '${mode.name}' - Enter to attach` : r.error);
+      toList(r.ok ? `started '${mode.name}' (${newAgent}) - Enter to attach` : r.error);
       return refresh();
     }
     if (mode.kind === "send") {
@@ -198,6 +204,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
             <>
               <Text wrap="truncate-end">
                 <Text bold>{sel.name}</Text>
+                <Text dimColor>  [{sel.agent}]</Text>
                 <Text color={COLOR[sel.state]}>  {sel.state}</Text>
                 {sel.detail ? <Text dimColor>  {sel.detail}</Text> : null}
                 <Text dimColor>  {home(sel.cwd)}</Text>
@@ -221,7 +228,11 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
         {(mode.kind === "new-name" || mode.kind === "new-dir" || mode.kind === "send") && (
           <Box>
             <Text color="cyan">
-              {mode.kind === "new-name" ? "new session name: " : mode.kind === "new-dir" ? `directory for '${mode.name}' [${process.cwd()}]: ` : `prompt for '${mode.name}': `}
+              {mode.kind === "new-name"
+                ? `new ${newAgent} session name (Tab: switch agent): `
+                : mode.kind === "new-dir"
+                  ? `directory for '${mode.name}' [${newAgent}, Tab: switch] [${process.cwd()}]: `
+                  : `prompt for '${mode.name}': `}
             </Text>
             <TextInput value={input} onChange={setInput} onSubmit={submit} />
           </Box>

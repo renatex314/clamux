@@ -23,7 +23,7 @@ async function run(body: () => Promise<ToolResult> | ToolResult): Promise<ToolRe
 }
 
 const brief = (s: Session) => ({
-  name: s.name, state: s.state, detail: s.detail || undefined, for_seconds: Math.round(s.ageS),
+  name: s.name, agent: s.agent, state: s.state, detail: s.detail || undefined, for_seconds: Math.round(s.ageS),
   dir: s.cwd, live: s.live, resumable: s.resumable,
 });
 
@@ -60,15 +60,16 @@ export async function runMcp(): Promise<void> {
 
   server.registerTool("create_session", {
     title: "Create session",
-    description: "Start a new Claude Code session in a directory. It runs in the background until killed. Returns once Claude has started; if it is stuck on the first-time folder-trust prompt, the result says so and includes the screen.",
+    description: "Start a new Claude Code or Antigravity CLI (agy) session in a directory. It runs in the background until killed. Returns once the agent has started; if it is stuck on a startup/trust prompt, the result says so and includes the screen.",
     inputSchema: {
       name: z.string().describe("Letters, digits, - and _ only (max 32 characters)"),
       dir: z.string().optional().describe("Working directory (default: the directory clamux was started in)"),
-      claude_args: z.array(z.string()).optional().describe('Extra arguments for claude, e.g. ["--model", "opus"]'),
+      agent: z.enum(["claude", "agy", "gemini"]).optional().describe("Agent CLI to run: 'claude' (default) or 'agy' ('gemini' is an alias for 'agy')"),
+      claude_args: z.array(z.string()).optional().describe('Extra arguments for the agent CLI, e.g. ["--model", "opus"]'),
       notify: z.boolean().optional().describe("Desktop notification when the session finishes or needs input (default false)"),
     },
-  }, ({ name: n, dir, claude_args, notify }) => run(async () => {
-    const created = await cx.create(n, { dir, claudeArgs: claude_args, notify });
+  }, ({ name: n, dir, agent, claude_args, notify }) => run(async () => {
+    const created = await cx.create(n, { dir, agent, claudeArgs: claude_args, notify });
     const s = await cx.waitFor(n, (x) => x.state !== "starting", { timeoutMs: 20_000 }).catch(() => cx.get(n) ?? created);
     return s.state === "starting" ? stalled(s) : json(brief(s));
   }));

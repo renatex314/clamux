@@ -9,10 +9,11 @@ import { connect, readMessages, send } from "./ipc.js";
 import { keyToBytes } from "./keys.js";
 import { HOME_DIR, RUN_DIR, SETTINGS, configFile, errorFile, screenFile, selfPath } from "./paths.js";
 import { liveSessions, pidAlive, readRegistry, removeRunFiles } from "./registry.js";
-import { readSaved, removeSaved, savedNames, writeSaved } from "./saved.js";
+import { parseAgent, readSaved, removeSaved, savedNames, writeSaved, type Agent } from "./saved.js";
 import { readStatus, removeStatus, statusNames, writeStatus } from "./status.js";
 
 export { liveSessions } from "./registry.js";
+export { parseAgent, type Agent } from "./saved.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -30,6 +31,15 @@ export function expandDir(dir: string): string {
   return path.resolve(d);
 }
 
+function hookCommand(event?: string): string {
+  const cli = selfPath();
+  const winPath = cli.replace(/\\/g, "/");
+  const base = process.platform === "win32"
+    ? `node ${winPath.includes(" ") ? `"${winPath}"` : winPath} hook`
+    : `'${process.execPath.replace(/'/g, `'\\''`)}' '${cli.replace(/'/g, `'\\''`)}' hook`;
+  return event ? `${base} ${event}` : base;
+}
+
 /**
  * Settings file handed to `claude --settings`; registers the status hooks for clamux sessions only.
  * The command must parse in every shell Claude Code may use for hooks (bash, cmd, PowerShell), so on
@@ -37,31 +47,72 @@ export function expandDir(dir: string): string {
  */
 export function writeSettings(): void {
   const events = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SessionEnd"];
-  const cli = selfPath();
-  const command = process.platform === "win32"
-    ? `node "${cli.replace(/\\/g, "/")}" hook`
-    : `'${process.execPath.replace(/'/g, `'\\''`)}' '${cli.replace(/'/g, `'\\''`)}' hook`;
+  const command = hookCommand();
   const hooks = Object.fromEntries(events.map((e) => [e, [{ hooks: [{ type: "command", command }] }]]));
   fs.mkdirSync(HOME_DIR, { recursive: true });
   fs.writeFileSync(SETTINGS, JSON.stringify({ hooks }, null, 2));
+}
+
+export const agyHooksFile = () => path.join(os.homedir(), ".gemini", "config", "hooks.json");
+
+/**
+ * Merges clamux's lifecycle hooks into `~/.gemini/config/hooks.json` for Antigravity CLI (`agy`).
+ * Sessions not started by clamux lack `CLAMUX_NAME` in their environment, so the hook is a no-op there.
+ */
+export function writeAgyHooks(): void {
+  const file = agyHooksFile();
+  let root: Record<string, unknown> = {};
+  try {
+    root = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+  } catch {
+    // create fresh
+  }
+  root.clamux = {
+    SessionStart: [{ type: "command", command: hookCommand("SessionStart") }],
+    PreInvocation: [{ type: "command", command: hookCommand("PreInvocation") }],
+    PostToolUse: [{ matcher: "*", hooks: [{ type: "command", command: hookCommand("PostToolUse") }] }],
+    Stop: [{ type: "command", command: hookCommand("Stop") }],
+  };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(root, null, 2));
+}
+
+export function removeAgyHooks(): boolean {
+  const file = agyHooksFile();
+  try {
+    const root = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
+    if (!("clamux" in root)) return false;
+    delete root.clamux;
+    if (Object.keys(root).length === 0) fs.rmSync(file, { force: true });
+    else fs.writeFileSync(file, JSON.stringify(root, null, 2));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Starts a detached host process for the session and waits until it is serving. */
 export async function createSession(
   name: string,
   dir: string,
-  opts: { notify: boolean; claudeArgs?: string[] },
+  opts: { notify: boolean; agent?: Agent | "gemini"; claudeArgs?: string[] },
 ): Promise<Result> {
   if (!validName(name)) return fail("INVALID", "name may only contain letters, digits, - and _ (max 32 characters)");
   if (liveSessions().has(name)) return fail("EXISTS", `session '${name}' already exists`);
   if (readSaved(name)) return fail("EXISTS", `session '${name}' is saved; resume it, or forget it to reuse the name`);
   const cwd = expandDir(dir);
   if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) return fail("INVALID", `not a directory: ${cwd}`);
+  let agent: Agent;
+  try {
+    agent = parseAgent(opts.agent);
+  } catch (e) {
+    return fail("INVALID", e instanceof Error ? e.message : String(e));
+  }
 
   const claudeArgs = opts.claudeArgs ?? [];
   // Saved before the host starts, so the first hook (which records the conversation id) finds it.
-  writeSaved(name, { cwd, claudeArgs, notify: opts.notify, sessionId: null, transcriptPath: null, savedAt: Date.now() / 1000 });
-  const r = await startHost(name, cwd, claudeArgs, opts.notify);
+  writeSaved(name, { cwd, agent, claudeArgs, notify: opts.notify, sessionId: null, transcriptPath: null, savedAt: Date.now() / 1000 });
+  const r = await startHost(name, cwd, agent, claudeArgs, opts.notify);
   if (!r.ok) removeSaved(name);
   return r;
 }
@@ -72,7 +123,7 @@ function withoutConversationArgs(args: string[]): string[] {
   for (let i = 0; i < args.length; i++) {
     const a = args[i] as string;
     if (a === "--continue" || a === "-c") continue;
-    if (a === "--resume" || a === "-r" || a === "--session-id") {
+    if (a === "--resume" || a === "-r" || a === "--session-id" || a === "--conversation") {
       if (args[i + 1] && !args[i + 1]!.startsWith("-")) i++;
       continue;
     }
@@ -85,7 +136,7 @@ export type ResumeResult = { ok: true; resumed: boolean } | Extract<Result, { ok
 
 /**
  * Restarts a saved session that is not running (killed, or lost to a reboot or crash), continuing its
- * Claude conversation. If no conversation was ever recorded, it starts fresh with the same settings.
+ * conversation. If no conversation was ever recorded, it starts fresh with the same settings.
  */
 export async function resumeSession(name: string): Promise<ResumeResult> {
   const sv = readSaved(name);
@@ -94,10 +145,12 @@ export async function resumeSession(name: string): Promise<ResumeResult> {
   if (!fs.existsSync(sv.cwd) || !fs.statSync(sv.cwd).isDirectory()) {
     return fail("INVALID", `directory is gone: ${sv.cwd}`) as Extract<Result, { ok: false }>;
   }
-  // Claude only writes the transcript once a prompt was sent; `--resume` on an empty session errors out.
+  const agent: Agent = sv.agent ?? "claude";
+  // Transcripts exist once a prompt was sent; resuming an empty session errors out.
   const resumable = sv.sessionId !== null && sv.transcriptPath !== null && fs.existsSync(sv.transcriptPath);
-  const args = resumable ? [...withoutConversationArgs(sv.claudeArgs), "--resume", sv.sessionId as string] : sv.claudeArgs;
-  const r = await startHost(name, sv.cwd, args, sv.notify);
+  const resumeFlag = agent === "agy" ? "--conversation" : "--resume";
+  const args = resumable ? [...withoutConversationArgs(sv.claudeArgs), resumeFlag, sv.sessionId as string] : sv.claudeArgs;
+  const r = await startHost(name, sv.cwd, agent, args, sv.notify);
   return r.ok ? { ok: true, resumed: resumable } : (r as Extract<Result, { ok: false }>);
 }
 
@@ -121,12 +174,13 @@ export function cleanStale(): string[] {
   return stale;
 }
 
-async function startHost(name: string, cwd: string, claudeArgs: string[], notify: boolean): Promise<Result> {
-  writeSettings();
+async function startHost(name: string, cwd: string, agent: Agent, claudeArgs: string[], notify: boolean): Promise<Result> {
+  if (agent === "agy") writeAgyHooks();
+  else writeSettings();
   removeStatus(name);
   removeRunFiles(name);
   fs.mkdirSync(RUN_DIR, { recursive: true });
-  const cfg: HostConfig = { cwd, claudeArgs, cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
+  const cfg: HostConfig = { cwd, agent, claudeArgs, cols: DEFAULT_COLS, rows: DEFAULT_ROWS };
   fs.writeFileSync(configFile(name), JSON.stringify(cfg));
 
   const host = spawn(process.execPath, [selfPath(), "host", name], {
@@ -144,7 +198,7 @@ async function startHost(name: string, cwd: string, claudeArgs: string[], notify
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     if (readRegistry(name)) {
-      writeStatus(name, { state: "starting", cwd, tool: null });
+      writeStatus(name, { state: "starting", agent, cwd, tool: null });
       return { ok: true };
     }
     if (hostExited) break;

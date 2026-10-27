@@ -1,25 +1,25 @@
-/** The Claude Code skill installed by `clamux setup`: tells Claude when and how to use the clamux MCP tools. */
+/** The usage skill installed by `clamux setup`: tells Claude Code / Antigravity CLI when and how to use the clamux MCP tools. */
 export const SKILL_MD = `---
 name: clamux
-description: Run and control other Claude Code sessions in the background through the clamux MCP tools (create_session, ask, send_prompt, wait_for_session, read_screen, press_keys, resume_session). Use it when the user wants work delegated to separate Claude Code sessions, tasks run in parallel, a long task run while they keep working, a session checked on or continued later, or names clamux.
+description: Run and control other Claude Code or Antigravity CLI (agy) sessions in the background through the clamux MCP tools (create_session, ask, send_prompt, wait_for_session, read_screen, press_keys, resume_session). Use it when the user wants work delegated to separate Claude Code or agy/Gemini sessions, tasks run in parallel, a long task run while they keep working, a session checked on or continued later, or names clamux.
 ---
 
-# Driving Claude Code sessions with clamux
+# Driving Claude Code & Antigravity CLI (agy) sessions with clamux
 
-clamux keeps interactive Claude Code sessions running in the background and exposes them as MCP tools (\`mcp__clamux__*\`). Each session is a full, separate Claude Code instance in a directory you choose. The user can open the same sessions in the \`clamux\` terminal dashboard at any time.
+clamux keeps interactive Claude Code (\`agent: "claude"\`) and Antigravity CLI (\`agent: "agy"\` or \`"gemini"\`) sessions running in the background and exposes them as MCP tools (\`mcp__clamux__*\`). Each session is a full, separate agent CLI instance in a directory you choose. The user can open the same sessions in the \`clamux\` terminal dashboard at any time.
 
 ## When to use it
 
-- The user asks to hand work to another Claude session, run several tasks in parallel, or keep something running while they do other things.
+- The user asks to hand work to another Claude or Gemini/agy session, run several tasks in parallel, or keep something running while they do other things.
 - The user wants a session checked on, continued, or brought back after a restart.
 
-Do not use it for work you can simply do yourself in this conversation. Each session is a real Claude Code instance and spends the user's subscription usage, so start one only when separate, long-running or parallel work is the point.
+Do not use it for work you can simply do yourself in this conversation. Each session is a real CLI instance and spends the user's subscription usage, so start one only when separate, long-running or parallel work is the point.
 
 ## Workflow
 
 1. \`list_sessions\` first: a session with the right name or directory may already exist (\`live\`), or be \`resumable\`.
-2. \`create_session\` with a short \`name\` (letters, digits, \`-\`, \`_\`) and the \`dir\` it should work in.
-3. \`ask\` to send a prompt and get Claude's final reply as text. Reply text only: tool calls and interface are left out.
+2. \`create_session\` with a short \`name\` (letters, digits, \`-\`, \`_\`), the \`dir\` it should work in, and optional \`agent\` (\`"claude"\` by default, or \`"agy"\` / \`"gemini"\`).
+3. \`ask\` to send a prompt and get the agent's final reply as text. Reply text only: tool calls and interface are left out.
 4. Repeat \`ask\` for follow-ups; the session keeps its conversation.
 5. \`kill_session\` when finished. It stays saved, so \`resume_session\` can continue the same conversation later. \`forget_session\` deletes it for good; only do that when the user wants it gone.
 

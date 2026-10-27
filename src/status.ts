@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { STATUS_DIR } from "./paths.js";
-import { readSaved, savedNames } from "./saved.js";
+import { readSaved, savedNames, type Agent } from "./saved.js";
 
 export type HookState = "starting" | "working" | "idle" | "waiting" | "ended";
 export type DisplayState = HookState | "dead" | "stale?";
 
 export interface Status {
   state: HookState;
+  agent?: Agent;
   tool?: string | null;
   message?: string | null;
   since?: number;
@@ -19,6 +20,7 @@ export interface Status {
 
 export interface Row {
   name: string;
+  agent: Agent;
   state: DisplayState;
   detail: string;
   ageS: number;
@@ -75,7 +77,10 @@ export function describe(name: string, live: Set<string>): Row {
   const now = nowS();
   const sv = readSaved(name);
   const base = {
-    name, cwd: st?.cwd ?? sv?.cwd ?? "", live: live.has(name),
+    name,
+    agent: st?.agent ?? sv?.agent ?? "claude",
+    cwd: st?.cwd ?? sv?.cwd ?? "",
+    live: live.has(name),
     sessionId: st?.session_id ?? sv?.sessionId ?? null,
     transcriptPath: st?.transcript_path ?? sv?.transcriptPath ?? null,
     resumable: !live.has(name) && sv !== null,

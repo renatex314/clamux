@@ -12,12 +12,15 @@ const tmp = fs.mkdtempSync(process.platform === "win32" ? path.join(process.env.
 const bin = path.join(tmp, "bin");
 fs.mkdirSync(bin);
 
-// A `claude` shim on PATH that runs the fake. (Windows runs .cmd shims, everything else a shell script.)
+// A `claude` and `agy` shim on PATH that run the fakes. (Windows runs .cmd shims, everything else a shell script.)
 const fake = path.join(root, "test/fake-claude.mjs");
+const fakeAgy = path.join(root, "test/fake-agy.mjs");
 if (process.platform === "win32") {
   fs.writeFileSync(path.join(bin, "claude.cmd"), `@"${process.execPath}" "${fake}" %*\r\n`);
+  fs.writeFileSync(path.join(bin, "agy.cmd"), `@"${process.execPath}" "${fakeAgy}" %*\r\n`);
 } else {
   fs.writeFileSync(path.join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "agy"), `#!/bin/sh\nexec "${process.execPath}" "${fakeAgy}" "$@"\n`, { mode: 0o755 });
 }
 
 // Isolate everything the SDK touches: the data dir (HOME) and `claude`.
@@ -27,7 +30,7 @@ process.env.PATH = `${bin}${path.delimiter}${process.env.PATH}`;
 process.env.CLAMUX_CLI = path.join(root, "dist/cli.js");
 process.env.FAKE_WORK_MS = "1000";
 
-const { Clamux, ClamuxError } = await import(path.join(root, "dist/index.js"));
+const { Clamux, ClamuxError } = await import("../dist/index.js");
 
 const code = async (p) => p.then(() => "no error", (e) => (e instanceof ClamuxError ? e.code : `other: ${e}`));
 const throwsCode = (fn) => { try { fn(); return "no error"; } catch (e) { return e instanceof ClamuxError ? e.code : `other: ${e}`; } };
@@ -202,5 +205,26 @@ describe("Clamux SDK", () => {
       process.env.PATH = saved;
     }
     assert.equal(cx.get("broken"), undefined);
+  });
+
+  test("supports Antigravity CLI (agy / gemini alias) sessions, hooks, transcripts, and --conversation resume", async () => {
+    const s = await cx.create("g", { dir: tmp, agent: "gemini" });
+    assert.equal(s.agent, "agy");
+    assert.equal((await cx.waitForIdle("g", { timeoutMs: 8000 })).state, "idle");
+    assert.ok(fs.existsSync(path.join(tmp, ".gemini/config/hooks.json")));
+
+    const r = await cx.ask("g", "olá agy", { timeoutMs: 10000 });
+    assert.equal(r.session.state, "idle");
+    assert.equal(r.answer, "agy-answer: olá agy");
+    assert.equal(cx.lastAnswer("g"), "agy-answer: olá agy");
+
+    await cx.kill("g");
+    const res = await cx.resume("g");
+    assert.equal(res.resumed, true);
+    assert.equal(res.session.agent, "agy");
+    await cx.waitForIdle("g", { timeoutMs: 8000 });
+    assert.match(await cx.screen("g"), /agy-ready args=--dangerously-skip-permissions --conversation agy-conv-1/);
+    await cx.kill("g");
+    cx.forget("g");
   });
 });

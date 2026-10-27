@@ -4,20 +4,25 @@ import { attachSession } from "./attach.js";
 import { lastAnswer } from "./transcript.js";
 import {
   capturePane, cleanStale, createSession, fetchScreen, forgetSession, killSession, liveSessions, pressKeys,
-  resumeSession, sendPrompt, type Result,
+  resumeSession, sendPrompt, type Agent, type Result,
 } from "./sessions.js";
 
 /** A snapshot of one session. */
 export type Session = Row;
 export type SessionState = DisplayState;
+export type { Agent };
 
 export interface CreateOptions {
-  /** Directory Claude Code starts in. Default: the current working directory. */
+  /** Directory the session starts in. Default: the current working directory. */
   dir?: string;
-  /** macOS notification when the session goes idle or needs you. Default: false (the CLI/TUI default to true). */
+  /** CLI backend to run: `"claude"` (default) or `"agy"` (`"gemini"` is accepted as an alias for `"agy"`). */
+  agent?: Agent | "gemini";
+  /** Desktop notification when the session goes idle or needs you. Default: false (the CLI/TUI default to true). */
   notify?: boolean;
-  /** Extra arguments passed to `claude`, e.g. ["--model", "opus"]. */
+  /** Extra arguments passed to the agent CLI (`claude` or `agy`), e.g. ["--model", "opus"]. */
   claudeArgs?: string[];
+  /** Alias for `claudeArgs`. */
+  args?: string[];
 }
 
 export interface WaitOptions {
@@ -85,9 +90,13 @@ export class Clamux {
     return this.list().find((s) => s.name === name);
   }
 
-  /** Starts Claude Code in a new detached session. */
+  /** Starts a new detached session (`claude` by default, or `agy` when `opts.agent` is `"agy"` / `"gemini"`). */
   async create(name: string, opts: CreateOptions = {}): Promise<Session> {
-    unwrap(await createSession(name, opts.dir ?? ".", { notify: opts.notify ?? false, claudeArgs: opts.claudeArgs }));
+    unwrap(await createSession(name, opts.dir ?? ".", {
+      notify: opts.notify ?? false,
+      agent: opts.agent,
+      claudeArgs: opts.args ?? opts.claudeArgs,
+    }));
     return this.require(name);
   }
 

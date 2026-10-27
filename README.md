@@ -1,8 +1,8 @@
 # clamux
 
-A terminal dashboard, CLI, TypeScript SDK and MCP server for running several Claude Code sessions side by side and seeing at a glance which ones are working, idle, or waiting for you. Runs natively on macOS, Linux and Windows - no tmux or other multiplexer needed.
+A terminal dashboard, CLI, TypeScript SDK and MCP server for running several Claude Code and Antigravity CLI (`agy` / Gemini) sessions side by side and seeing at a glance which ones are working, idle, or waiting for you. Runs natively on macOS, Linux and Windows - no tmux or other multiplexer needed.
 
-Status comes from Claude Code hooks, not screen scraping. The hooks are loaded per session with `claude --settings ~/.clamux/settings.json`, so `~/.claude/settings.json` is never touched and only sessions started through clamux report status.
+Status comes from lifecycle hooks, not screen scraping. For Claude Code, hooks are loaded per session with `claude --settings ~/.clamux/settings.json` (`~/.claude/settings.json` is never touched). For Antigravity CLI (`agy`), hooks are registered under the `"clamux"` key in `~/.gemini/config/hooks.json` and only report status for sessions started through clamux (`CLAMUX_NAME` in the environment).
 
 ## Install
 
@@ -33,7 +33,7 @@ On Windows, run `npm link` instead (or call `node dist\cli.js`).
 |---|---|
 | `↑` `↓` / `j` `k` | select a session |
 | `Enter` | attach to it; press `Ctrl-b` then `d` to detach and come back to the dashboard |
-| `n` | new session (asks for a name, then a directory) |
+| `n` | new session (asks for a name, then a directory; press `Tab` to switch between `claude` and `agy`) |
 | `s` | type a prompt into the selected session (asks first if it is busy) |
 | `r` | resume the selected session if it is not running |
 | `x` | kill the selected session (it stays saved, so `r` brings it back) |
@@ -41,7 +41,7 @@ On Windows, run `npm link` instead (or call `node dist\cli.js`).
 | `c` | remove leftover status entries |
 | `q` | quit (sessions keep running) |
 
-Scriptable subcommands: `clamux new <name> [dir] [-d] [--no-notify] [-- <claude args>]`, `ls`, `attach`, `send <name> <prompt...> [--force]`, `peek`, `kill`, `resume <name> [-d]`, `resume --all`, `forget`, `clean`.
+Scriptable subcommands: `clamux new <name> [dir] [-a claude|agy] [-d] [--no-notify] [-- <agent args>]`, `ls`, `attach`, `send <name> <prompt...> [--force]`, `peek`, `kill`, `resume <name> [-d]`, `resume --all`, `forget`, `clean`.
 
 ## Saved sessions
 

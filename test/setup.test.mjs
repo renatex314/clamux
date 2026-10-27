@@ -67,4 +67,28 @@ describe("clamux setup", () => {
     assert.deepEqual(logged(), ["mcp remove clamux --scope user"]);
     assert.equal(fs.existsSync(path.dirname(skill)), false);
   });
+
+  test("also configures agy (MCP, skill and hooks.json) when `agy` is on PATH", () => {
+    fs.rmSync(calls, { force: true });
+    const agyCalls = path.join(tmp, "agy-calls.log");
+    const agyShim = path.join(bin, process.platform === "win32" ? "agy.cmd" : "agy");
+    if (process.platform === "win32") {
+      fs.writeFileSync(agyShim, `@echo %* >> "${agyCalls}"\r\n`);
+    } else {
+      fs.writeFileSync(agyShim, `#!/bin/sh\necho "$@" >> "${agyCalls}"\n`, { mode: 0o755 });
+    }
+    const r = run(["setup"]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const agyLog = fs.readFileSync(agyCalls, "utf8").trim().split(/\r?\n/).map((l) => l.trim());
+    assert.equal(agyLog[0], "mcp remove clamux");
+    assert.equal(agyLog[1], `mcp add clamux -- ${process.execPath} ${cli} mcp`);
+    assert.ok(fs.existsSync(path.join(tmp, ".gemini/config/skills/clamux/SKILL.md")));
+    assert.ok(fs.existsSync(path.join(tmp, ".gemini/config/hooks.json")));
+
+    const rm = run(["setup", "--remove"]);
+    assert.equal(rm.status, 0, rm.stdout + rm.stderr);
+    assert.equal(fs.existsSync(path.join(tmp, ".gemini/config/skills/clamux")), false);
+    assert.equal(fs.existsSync(path.join(tmp, ".gemini/config/hooks.json")), false);
+    fs.rmSync(agyShim, { force: true });
+  });
 });

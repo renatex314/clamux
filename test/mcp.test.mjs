@@ -12,10 +12,13 @@ const bin = path.join(tmp, "bin");
 fs.mkdirSync(bin);
 
 const fake = path.join(root, "test/fake-claude.mjs");
+const fakeAgy = path.join(root, "test/fake-agy.mjs");
 if (process.platform === "win32") {
   fs.writeFileSync(path.join(bin, "claude.cmd"), `@"${process.execPath}" "${fake}" %*\r\n`);
+  fs.writeFileSync(path.join(bin, "agy.cmd"), `@"${process.execPath}" "${fakeAgy}" %*\r\n`);
 } else {
   fs.writeFileSync(path.join(bin, "claude"), `#!/bin/sh\nexec "${process.execPath}" "${fake}" "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, "agy"), `#!/bin/sh\nexec "${process.execPath}" "${fakeAgy}" "$@"\n`, { mode: 0o755 });
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -106,5 +109,20 @@ describe("clamux MCP server", () => {
     await call("kill_session", { name: "m" });
     assert.match((await call("forget_session", { name: "m" })).text, /Forgot/);
     assert.deepEqual(JSON.parse((await call("list_sessions")).text), []);
+  });
+
+  test("create_session and ask work with agent='agy' (or 'gemini')", async () => {
+    const r = await call("create_session", { name: "g", dir: tmp, agent: "agy" });
+    assert.equal(r.isError, false, r.text);
+    const info = JSON.parse(r.text);
+    assert.equal(info.agent, "agy");
+    assert.equal(info.state, "idle");
+
+    const ans = await call("ask", { name: "g", prompt: "hello agy mcp" });
+    assert.equal(ans.isError, false, ans.text);
+    assert.equal(ans.text, "agy-answer: hello agy mcp");
+
+    await call("kill_session", { name: "g" });
+    await call("forget_session", { name: "g" });
   });
 });

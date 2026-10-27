@@ -6,7 +6,9 @@ const TAIL_BYTES = 4 * 1024 * 1024;
 interface Entry {
   type?: string;
   timestamp?: string;
+  created_at?: string;
   isSidechain?: boolean;
+  content?: unknown;
   message?: { content?: unknown };
 }
 
@@ -43,6 +45,12 @@ export function lastAnswer(file: string, sinceMs = 0): string | null {
     try {
       e = JSON.parse(lines[i] as string) as Entry;
     } catch {
+      continue;
+    }
+    if (e.type === "PLANNER_RESPONSE" || e.type === "USER_INPUT") {
+      if (e.created_at && Date.parse(e.created_at) < sinceMs) break;
+      if (e.type === "USER_INPUT") break;
+      if (typeof e.content === "string" && e.content) parts.unshift(e.content);
       continue;
     }
     if (e.type !== "assistant" && e.type !== "user") continue; // bookkeeping entries between messages
