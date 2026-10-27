@@ -50,6 +50,9 @@ export interface StateChange {
   session: Session;
 }
 
+/** How long `ask` keeps looking for the reply in the transcript after Claude reports it is done. */
+const ANSWER_GRACE_MS = 10_000;
+
 function unwrap(r: Result): void {
   if (!r.ok) throw new ClamuxError(r.code, r.error);
 }
@@ -158,9 +161,11 @@ export class Clamux {
     const screen = await this.screen(name);
     // The hook that reports "idle" can fire a moment before Claude's last transcript line is flushed.
     let answer: string | null = null;
-    for (let i = 0; i < 20 && answer === null && session.transcriptPath; i++) {
+    const giveUp = Math.min(Date.now() + ANSWER_GRACE_MS, opts.timeoutMs === undefined ? Infinity : sentAt * 1000 + opts.timeoutMs);
+    while (session.transcriptPath) {
       answer = lastAnswer(session.transcriptPath, sentAt * 1000 - 1000);
-      if (answer === null) await sleep(100);
+      if (answer !== null || Date.now() >= giveUp || opts.signal?.aborted) break;
+      await sleep(100, opts.signal);
     }
     return { session, answer, screen, transcriptPath: session.transcriptPath };
   }
