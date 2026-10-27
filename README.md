@@ -59,13 +59,28 @@ Each session is a small detached host process (`clamux host <name>`) that owns t
 
 `clamux mcp` runs clamux as an [MCP](https://modelcontextprotocol.io) server on stdio, so Claude Code (or any MCP client) can create and drive sessions itself.
 
+### Install into Claude Code
+
 ```bash
-claude mcp add clamux -- npx -y @renatex314/clamux@latest mcp     # or, if installed globally: claude mcp add clamux -- clamux mcp
+npm install -g @renatex314/clamux
+clamux setup
+```
+
+`clamux setup` registers the server for all your projects (`claude mcp add --scope user`) and installs a skill at `~/.claude/skills/clamux/` that tells Claude when and how to use the tools: the create/ask/kill workflow, parallel and long tasks, what each state means, and to show you permission and folder-trust prompts rather than approving them blindly. Restart Claude Code (or run `/mcp`) afterwards. `clamux setup --remove` undoes both. It is safe to run again after upgrading; it replaces the earlier registration and skill.
+
+The registered command is `clamux mcp` when `clamux` is on your PATH, otherwise the absolute path of the install that ran `setup`. It only touches the user-scope MCP registration and `~/.claude/skills/clamux/`; your `settings.json` is not modified.
+
+### Other clients and manual setup
+
+```bash
+claude mcp add clamux -- npx -y @renatex314/clamux@latest mcp
 ```
 
 Use `@latest` as shown: when the current directory is this very project, a bare `npx @renatex314/clamux` runs the local checkout instead of downloading the package, and fails if it is not linked.
 
 Other clients: `{ "mcpServers": { "clamux": { "command": "npx", "args": ["-y", "@renatex314/clamux@latest", "mcp"] } } }`.
+
+### Tools
 
 | Tool | |
 |---|---|
@@ -139,6 +154,6 @@ Notes:
 - `src/tui.tsx` – the Ink dashboard (loaded lazily so hooks start fast)
 - `src/cli.ts` – entry point and subcommands
 - `src/client.ts`, `src/index.ts`, `src/errors.ts`, `src/transcript.ts` – the SDK
-- `src/mcp.ts` – the MCP server (`clamux mcp`)
+- `src/mcp.ts` – the MCP server (`clamux mcp`); `src/setup.ts`, `src/skill.ts` – `clamux setup` and the skill it installs
 
 `npm run typecheck` checks types; `npm run build` bundles to `dist/` and emits type declarations; `npm test` builds and runs the SDK tests (they use a fake `claude`, an isolated `HOME` and real pseudo-terminals, so they never touch your real sessions or your subscription).

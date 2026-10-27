@@ -23,6 +23,7 @@ const HELP = `clamux - manage multiple Claude Code sessions, with live working/i
   clamux forget <name>            delete a stopped session and its saved record
   clamux clean                    remove status files of sessions that are gone
   clamux mcp                      run as an MCP server on stdio (for Claude Code and other MCP clients)
+  clamux setup [--remove]         register the MCP server and a usage skill with Claude Code, for all projects
 
 Status comes from Claude Code hooks loaded per session via \`claude --settings\`;
 ~/.claude/settings.json is never modified.`;
@@ -69,6 +70,14 @@ async function main(): Promise<void> {
   if (cmd === "-h" || cmd === "--help" || cmd === "help") return void console.log(HELP);
 
   switch (cmd) {
+    case "setup": {
+      const { values } = parseArgs({ args: rest, options: { remove: { type: "boolean" } } });
+      const { setup, unsetup } = await import("./setup.js");
+      const r = values.remove ? unsetup() : setup();
+      r.lines.forEach((l) => console.log(l));
+      if (!r.ok) process.exit(1);
+      return;
+    }
     case "mcp": {
       const { runMcp } = await import("./mcp.js");
       return runMcp();
