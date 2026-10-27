@@ -60,10 +60,12 @@ Each session is a small detached host process (`clamux host <name>`) that owns t
 `clamux mcp` runs clamux as an [MCP](https://modelcontextprotocol.io) server on stdio, so Claude Code (or any MCP client) can create and drive sessions itself.
 
 ```bash
-claude mcp add clamux -- npx -y @renatex314/clamux mcp     # or, if installed globally: claude mcp add clamux -- clamux mcp
+claude mcp add clamux -- npx -y @renatex314/clamux@latest mcp     # or, if installed globally: claude mcp add clamux -- clamux mcp
 ```
 
-Other clients: `{ "mcpServers": { "clamux": { "command": "npx", "args": ["-y", "@renatex314/clamux", "mcp"] } } }`.
+Use `@latest` as shown: when the current directory is this very project, a bare `npx @renatex314/clamux` runs the local checkout instead of downloading the package, and fails if it is not linked.
+
+Other clients: `{ "mcpServers": { "clamux": { "command": "npx", "args": ["-y", "@renatex314/clamux@latest", "mcp"] } } }`.
 
 | Tool | |
 |---|---|
