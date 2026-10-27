@@ -1,6 +1,6 @@
 {
   "name": "@renatex314/clamux",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Dashboard, CLI and SDK to run multiple Claude Code sessions with live working/idle status (macOS, Linux, Windows)",
   "type": "module",
   "bin": {
@@ -16,12 +16,14 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
     "ink": "^8.0.0",
     "ink-text-input": "^6.0.0",
     "node-pty": "^1.1.0",
-    "react": "^19.3.1"
+    "react": "^19.3.1",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

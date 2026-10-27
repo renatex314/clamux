@@ -1,6 +1,6 @@
 # clamux
 
-A terminal dashboard for running several Claude Code sessions side by side and seeing at a glance which ones are working, idle, or waiting for you. Runs natively on macOS, Linux and Windows - no tmux or other multiplexer needed.
+A terminal dashboard, CLI, TypeScript SDK and MCP server for running several Claude Code sessions side by side and seeing at a glance which ones are working, idle, or waiting for you. Runs natively on macOS, Linux and Windows - no tmux or other multiplexer needed.
 
 Status comes from Claude Code hooks, not screen scraping. The hooks are loaded per session with `claude --settings ~/.clamux/settings.json`, so `~/.claude/settings.json` is never touched and only sessions started through clamux report status.
 
@@ -54,6 +54,29 @@ A desktop notification fires when a session goes from working to idle, or needs 
 ## How it works
 
 Each session is a small detached host process (`clamux host <name>`) that owns the Claude Code process through a pseudo-terminal and keeps a virtual screen of what it draws. The host listens on a unix socket (a named pipe on Windows). `attach` connects your terminal to it (replaying the current screen first), `send` and `press` write input to it, and the host also keeps a plain-text copy of the screen in `~/.clamux/run/` so the dashboard preview and `peek` are cheap. Sessions keep running when you close the dashboard or your terminal.
+
+## MCP server
+
+`clamux mcp` runs clamux as an [MCP](https://modelcontextprotocol.io) server on stdio, so Claude Code (or any MCP client) can create and drive sessions itself.
+
+```bash
+claude mcp add clamux -- npx -y @renatex314/clamux mcp     # or, if installed globally: claude mcp add clamux -- clamux mcp
+```
+
+Other clients: `{ "mcpServers": { "clamux": { "command": "npx", "args": ["-y", "@renatex314/clamux", "mcp"] } } }`.
+
+| Tool | |
+|---|---|
+| `list_sessions` | all sessions with state (`working`, `idle`, `waiting`, ...) and whether they are `resumable` |
+| `create_session` | start a session in a directory (`name`, `dir`, `claude_args`, `notify`) |
+| `ask` | send a prompt, wait for Claude to finish, return its final reply as text |
+| `send_prompt` / `wait_for_session` / `get_answer` | the same in separate steps: send and return, wait until it stops working, read the latest reply |
+| `read_screen` / `press_keys` | see the terminal and send keystrokes, e.g. to answer a permission prompt |
+| `kill_session` / `resume_session` / `forget_session` | stop (stays saved), continue the conversation later, delete for good |
+
+Long waits don't fail: if a session is still working at the timeout, or stops on a permission prompt or the first-time folder-trust prompt, the tool returns its state and screen with a hint, and the caller continues with `wait_for_session` or `press_keys`. Errors are tool errors prefixed with the code (`NOT_FOUND`, `BUSY`, ...). Sessions are the same ones the dashboard and SDK see, and they keep running after the MCP server exits.
+
+Note that whoever can call these tools can make Claude Code run prompts (and so tools) in any directory the user can reach; add the server only to clients you trust.
 
 ## SDK
 
@@ -114,5 +137,6 @@ Notes:
 - `src/tui.tsx` – the Ink dashboard (loaded lazily so hooks start fast)
 - `src/cli.ts` – entry point and subcommands
 - `src/client.ts`, `src/index.ts`, `src/errors.ts`, `src/transcript.ts` – the SDK
+- `src/mcp.ts` – the MCP server (`clamux mcp`)
 
 `npm run typecheck` checks types; `npm run build` bundles to `dist/` and emits type declarations; `npm test` builds and runs the SDK tests (they use a fake `claude`, an isolated `HOME` and real pseudo-terminals, so they never touch your real sessions or your subscription).
