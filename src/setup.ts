@@ -69,8 +69,13 @@ export function setup(): { ok: boolean; lines: string[] } {
     fs.mkdirSync(path.dirname(agySkillFile()), { recursive: true });
     fs.writeFileSync(agySkillFile(), SKILL_MD);
     lines.push(`installed the agy usage skill: ${agySkillFile()}`);
-    writeAgyHooks();
-    lines.push(`installed the agy status hooks: ${agyHooksFile()}`);
+    try {
+      writeAgyHooks();
+      lines.push(`installed the agy status hooks: ${agyHooksFile()}`);
+    } catch (e) {
+      ok = false;
+      lines.push(`could not install the agy status hooks: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   if (ok) lines.push("restart Claude Code / agy (or run /mcp) to pick it up.");

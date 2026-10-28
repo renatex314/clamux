@@ -58,14 +58,28 @@ export const agyHooksFile = () => path.join(os.homedir(), ".gemini", "config", "
 /**
  * Merges clamux's lifecycle hooks into `~/.gemini/config/hooks.json` for Antigravity CLI (`agy`).
  * Sessions not started by clamux lack `CLAMUX_NAME` in their environment, so the hook is a no-op there.
+ * Throws, without writing, if the file exists but cannot be parsed: rewriting it would drop the user's own hooks.
  */
 export function writeAgyHooks(): void {
   const file = agyHooksFile();
   let root: Record<string, unknown> = {};
+  let raw: string | null = null;
   try {
-    root = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, unknown>;
-  } catch {
-    // create fresh
+    raw = fs.readFileSync(file, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  if (raw !== null) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new Error(`${file} is not valid JSON; fix it (or delete it) so clamux can add its status hooks`);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`${file} is not a JSON object; fix it (or delete it) so clamux can add its status hooks`);
+    }
+    root = parsed as Record<string, unknown>;
   }
   root.clamux = {
     SessionStart: [{ type: "command", command: hookCommand("SessionStart") }],
@@ -175,8 +189,13 @@ export function cleanStale(): string[] {
 }
 
 async function startHost(name: string, cwd: string, agent: Agent, claudeArgs: string[], notify: boolean): Promise<Result> {
-  if (agent === "agy") writeAgyHooks();
-  else writeSettings();
+  if (agent === "agy") {
+    try {
+      writeAgyHooks();
+    } catch (e) {
+      return fail("HOST_FAILED", e instanceof Error ? e.message : String(e));
+    }
+  } else writeSettings();
   removeStatus(name);
   removeRunFiles(name);
   fs.mkdirSync(RUN_DIR, { recursive: true });
