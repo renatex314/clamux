@@ -9,10 +9,10 @@ import {
   type Result,
 } from "./sessions.js";
 
-const HELP = `clamux - manage multiple Claude Code sessions, with live working/idle status.
+const HELP = `clamux - manage multiple Claude Code and Antigravity CLI (agy) sessions, with live working/idle status.
 
   clamux                          open the interactive dashboard (TUI)
-  clamux new <name> [dir] [-d] [--no-notify] [-- <claude args>]
+  clamux new <name> [dir] [-a claude|agy] [-d] [--no-notify] [-- <agent args>]
   clamux ls
   clamux attach <name>            (detach with Ctrl-b d)
   clamux send <name> <prompt...> [--force]
@@ -22,11 +22,11 @@ const HELP = `clamux - manage multiple Claude Code sessions, with live working/i
   clamux resume --all             restart every saved session that is not running
   clamux forget <name>            delete a stopped session and its saved record
   clamux clean                    remove status files of sessions that are gone
-  clamux mcp                      run as an MCP server on stdio (for Claude Code and other MCP clients)
-  clamux setup [--remove]         register the MCP server and a usage skill with Claude Code, for all projects
+  clamux mcp                      run as an MCP server on stdio (for Claude Code, agy, and other MCP clients)
+  clamux setup [--remove]         register the MCP server and a usage skill with Claude Code and agy
 
-Status comes from Claude Code hooks loaded per session via \`claude --settings\`;
-~/.claude/settings.json is never modified.`;
+Status comes from lifecycle hooks (loaded per session via \`claude --settings\` for Claude Code,
+and \`~/.gemini/config/hooks.json\` for Antigravity CLI).`;
 
 const COLORS: Record<DisplayState, string> = {
   working: "33", waiting: "31;1", idle: "32", starting: "36", dead: "31", ended: "90", "stale?": "35",
@@ -46,11 +46,11 @@ function ls(): void {
   if (rows.length === 0) return void console.log("no sessions (clamux new <name>)");
   const color = process.stdout.isTTY;
   const w = Math.max(4, ...rows.map((r) => r.name.length));
-  console.log(`${"NAME".padEnd(w)}  ${"STATE".padEnd(8)}  ${"FOR".padEnd(7)}  ${"DETAIL".padEnd(50)}  DIR`);
+  console.log(`${"NAME".padEnd(w)}  ${"AGENT".padEnd(6)}  ${"STATE".padEnd(8)}  ${"FOR".padEnd(7)}  ${"DETAIL".padEnd(50)}  DIR`);
   for (const r of rows) {
     const s = r.state.padEnd(8);
     const state = color ? `\x1b[${COLORS[r.state]}m${s}\x1b[0m` : s;
-    console.log(`${r.name.padEnd(w)}  ${state}  ${fmtAge(r.ageS).padEnd(7)}  ${r.detail.padEnd(50)}  ${r.cwd}`);
+    console.log(`${r.name.padEnd(w)}  ${r.agent.padEnd(6)}  ${state}  ${fmtAge(r.ageS).padEnd(7)}  ${r.detail.padEnd(50)}  ${r.cwd}`);
   }
 }
 
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
   if (dd >= 0) [argv, claudeArgs] = [argv.slice(0, dd), argv.slice(dd + 1)];
 
   const [cmd = "tui", ...rest] = argv;
-  if (cmd === "hook") return runHook();
+  if (cmd === "hook") return runHook(rest[0]);
   if (cmd === "host") { // internal: the detached process that owns one session
     const name = rest[0] ?? die("usage: clamux host <name>");
     const { hostMain } = await import("./host.js");
@@ -93,11 +93,19 @@ async function main(): Promise<void> {
       const { values, positionals } = parseArgs({
         args: rest,
         allowPositionals: true,
-        options: { detach: { type: "boolean", short: "d" }, "no-notify": { type: "boolean" } },
+        options: {
+          agent: { type: "string", short: "a" },
+          detach: { type: "boolean", short: "d" },
+          "no-notify": { type: "boolean" },
+        },
       });
       const [name, dir = "."] = positionals;
-      if (!name) die("usage: clamux new <name> [dir] [-d] [--no-notify] [-- <claude args>]");
-      must(await createSession(name, dir, { notify: !values["no-notify"], claudeArgs }));
+      if (!name) die("usage: clamux new <name> [dir] [-a claude|agy] [-d] [--no-notify] [-- <agent args>]");
+      must(await createSession(name, dir, {
+        notify: !values["no-notify"],
+        agent: values.agent as "claude" | "agy" | "gemini" | undefined,
+        claudeArgs,
+      }));
       console.log(`started '${name}'`);
       if (!values.detach) must(await attachSession(name));
       return;

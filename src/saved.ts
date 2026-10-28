@@ -2,9 +2,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { SAVED_DIR } from "./paths.js";
 
+export type Agent = "claude" | "agy";
+
+export function parseAgent(v?: string): Agent {
+  if (!v || v === "claude") return "claude";
+  if (v === "agy" || v === "gemini") return "agy";
+  throw new Error(`unknown agent '${v}' (expected 'claude', 'agy', or 'gemini')`);
+}
+
 /** What it takes to bring a session back: where it ran, how it was started, and which conversation it held. */
 export interface Saved {
   cwd: string;
+  agent?: Agent;
   claudeArgs: string[];
   notify: boolean;
   sessionId: string | null;

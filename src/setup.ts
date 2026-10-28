@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { childEnv } from "./env.js";
 import { selfPath } from "./paths.js";
+import { agyHooksFile, removeAgyHooks, writeAgyHooks } from "./sessions.js";
 import { SKILL_MD } from "./skill.js";
 
 const SERVER = "clamux";
@@ -11,11 +12,16 @@ const win = process.platform === "win32";
 
 const claudeDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 const skillFile = () => path.join(claudeDir(), "skills", SERVER, "SKILL.md");
+const agySkillFile = () => path.join(os.homedir(), ".gemini", "config", "skills", SERVER, "SKILL.md");
+
+function runCli(bin: string, args: string[]): { ok: boolean; out: string } {
+  const r = spawnSync(bin, args, { encoding: "utf8", env: childEnv(), shell: win, stdio: ["ignore", "pipe", "pipe"] });
+  if (r.error) return { ok: false, out: (r.error as NodeJS.ErrnoException).code === "ENOENT" ? `the \`${bin}\` command was not found on PATH` : r.error.message };
+  return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+}
 
 function claude(args: string[]): { ok: boolean; out: string } {
-  const r = spawnSync("claude", args, { encoding: "utf8", env: childEnv(), shell: win, stdio: ["ignore", "pipe", "pipe"] });
-  if (r.error) return { ok: false, out: (r.error as NodeJS.ErrnoException).code === "ENOENT" ? "the `claude` command was not found on PATH" : r.error.message };
-  return { ok: r.status === 0, out: `${r.stdout ?? ""}${r.stderr ?? ""}`.trim() };
+  return runCli("claude", args);
 }
 
 function onPath(cmd: string): boolean {
@@ -55,7 +61,24 @@ export function setup(): { ok: boolean; lines: string[] } {
   fs.writeFileSync(skillFile(), SKILL_MD);
   lines.push(`installed the usage skill: ${skillFile()}`);
 
-  if (ok) lines.push("restart Claude Code (or run /mcp) to pick it up.");
+  if (onPath("agy")) {
+    runCli("agy", ["mcp", "remove", SERVER]);
+    const agyAdded = runCli("agy", ["mcp", "add", SERVER, "--", ...cmd]);
+    if (agyAdded.ok) lines.push(`registered the MCP server in agy: ${cmd.join(" ")}`);
+    else lines.push(`could not register the MCP server in agy: ${agyAdded.out}`);
+    fs.mkdirSync(path.dirname(agySkillFile()), { recursive: true });
+    fs.writeFileSync(agySkillFile(), SKILL_MD);
+    lines.push(`installed the agy usage skill: ${agySkillFile()}`);
+    try {
+      writeAgyHooks();
+      lines.push(`installed the agy status hooks: ${agyHooksFile()}`);
+    } catch (e) {
+      ok = false;
+      lines.push(`could not install the agy status hooks: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  if (ok) lines.push("restart Claude Code / agy (or run /mcp) to pick it up.");
   return { ok, lines };
 }
 
@@ -68,5 +91,16 @@ export function unsetup(): { ok: boolean; lines: string[] } {
   const had = fs.existsSync(dir);
   fs.rmSync(dir, { recursive: true, force: true });
   lines.push(had ? `removed the skill: ${dir}` : "skill: nothing to remove");
+
+  if (onPath("agy")) {
+    const agyRemoved = runCli("agy", ["mcp", "remove", SERVER]);
+    if (agyRemoved.ok) lines.push("removed the agy MCP server registration");
+  }
+  const agyDir = path.dirname(agySkillFile());
+  if (fs.existsSync(agyDir)) {
+    fs.rmSync(agyDir, { recursive: true, force: true });
+    lines.push(`removed the agy skill: ${agyDir}`);
+  }
+  if (removeAgyHooks()) lines.push(`removed the agy status hooks from ${agyHooksFile()}`);
   return { ok: true, lines };
 }

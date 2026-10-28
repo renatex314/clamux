@@ -6,9 +6,12 @@ import { childEnv } from "./env.js";
 import { RUN_DIR, endpointFor, errorFile, screenFile } from "./paths.js";
 import { readMessages, send, type Msg } from "./ipc.js";
 import { removeRunFiles, writeRegistry } from "./registry.js";
+import type { Agent } from "./saved.js";
+import { readStatus, writeStatus } from "./status.js";
 
 export interface HostConfig {
   cwd: string;
+  agent?: Agent;
   claudeArgs: string[];
   cols: number;
   rows: number;
@@ -75,7 +78,13 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
   const serializer = new SerializeAddon();
   term.loadAddon(serializer);
 
-  const { file, args } = resolveCommand("claude", ["--settings", settingsPath, ...cfg.claudeArgs]);
+  const isAgy = cfg.agent === "agy";
+  const agyArgs = cfg.claudeArgs.includes("--dangerously-skip-permissions")
+    ? cfg.claudeArgs
+    : ["--dangerously-skip-permissions", ...cfg.claudeArgs];
+  const { file, args } = isAgy
+    ? resolveCommand("agy", agyArgs)
+    : resolveCommand("claude", ["--settings", settingsPath, ...cfg.claudeArgs]);
   const proc = pty.spawn(file, args, {
     name: "xterm-256color",
     cols: cfg.cols,
@@ -95,10 +104,18 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
   };
 
   // Plain-text copy of the visible screen, so previews and `peek` can read it synchronously.
+  let agyMarkedIdle = false;
   const writeScreen = () => {
+    const text = screenText();
+    // Antigravity CLI (`agy`) fires SessionStart on the first prompt rather than TUI launch;
+    // once its prompt bar (`? for shortcuts`) is drawn, the session is ready and idle.
+    if (isAgy && !agyMarkedIdle && text.includes("? for shortcuts")) {
+      agyMarkedIdle = true;
+      if (readStatus(name)?.state === "starting") writeStatus(name, { state: "idle", tool: null });
+    }
     try {
       const tmp = `${screenFile(name)}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, screenText());
+      fs.writeFileSync(tmp, text);
       fs.renameSync(tmp, screenFile(name));
     } catch {
       // a reader may hold the file open on Windows; the next tick retries

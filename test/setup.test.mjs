@@ -67,4 +67,54 @@ describe("clamux setup", () => {
     assert.deepEqual(logged(), ["mcp remove clamux --scope user"]);
     assert.equal(fs.existsSync(path.dirname(skill)), false);
   });
+
+  test("also configures agy (MCP, skill and hooks.json) when `agy` is on PATH", () => {
+    fs.rmSync(calls, { force: true });
+    const agyCalls = path.join(tmp, "agy-calls.log");
+    const agyShim = path.join(bin, process.platform === "win32" ? "agy.cmd" : "agy");
+    if (process.platform === "win32") {
+      fs.writeFileSync(agyShim, `@echo %* >> "${agyCalls}"\r\n`);
+    } else {
+      fs.writeFileSync(agyShim, `#!/bin/sh\necho "$@" >> "${agyCalls}"\n`, { mode: 0o755 });
+    }
+    const r = run(["setup"]);
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const agyLog = fs.readFileSync(agyCalls, "utf8").trim().split(/\r?\n/).map((l) => l.trim());
+    assert.equal(agyLog[0], "mcp remove clamux");
+    assert.equal(agyLog[1], `mcp add clamux -- ${process.execPath} ${cli} mcp`);
+    assert.ok(fs.existsSync(path.join(tmp, ".gemini/config/skills/clamux/SKILL.md")));
+    assert.ok(fs.existsSync(path.join(tmp, ".gemini/config/hooks.json")));
+
+    const rm = run(["setup", "--remove"]);
+    assert.equal(rm.status, 0, rm.stdout + rm.stderr);
+    assert.equal(fs.existsSync(path.join(tmp, ".gemini/config/skills/clamux")), false);
+    assert.equal(fs.existsSync(path.join(tmp, ".gemini/config/hooks.json")), false);
+    fs.rmSync(agyShim, { force: true });
+  });
+
+  test("keeps the user's own agy hooks, and never overwrites a hooks.json it cannot parse", () => {
+    const agyShim = path.join(bin, process.platform === "win32" ? "agy.cmd" : "agy");
+    if (process.platform === "win32") fs.writeFileSync(agyShim, "@echo off\r\n");
+    else fs.writeFileSync(agyShim, "#!/bin/sh\n", { mode: 0o755 });
+    const hooks = path.join(tmp, ".gemini/config/hooks.json");
+    fs.mkdirSync(path.dirname(hooks), { recursive: true });
+
+    fs.writeFileSync(hooks, JSON.stringify({ mine: { Stop: [{ type: "command", command: "echo hi" }] } }));
+    assert.equal(run(["setup"]).status, 0);
+    const merged = JSON.parse(fs.readFileSync(hooks, "utf8"));
+    assert.deepEqual(merged.mine, { Stop: [{ type: "command", command: "echo hi" }] });
+    assert.ok(merged.clamux);
+    run(["setup", "--remove"]);
+    assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(hooks, "utf8"))), ["mine"]);
+
+    const broken = '{ // my hooks\n  "mine": {}\n}';
+    fs.writeFileSync(hooks, broken);
+    const r = run(["setup"]);
+    assert.notEqual(r.status, 0);
+    assert.match(r.stdout + r.stderr, /could not install the agy status hooks: .*not valid JSON/);
+    assert.equal(fs.readFileSync(hooks, "utf8"), broken);
+
+    fs.rmSync(path.dirname(hooks), { recursive: true, force: true });
+    fs.rmSync(agyShim, { force: true });
+  });
 });

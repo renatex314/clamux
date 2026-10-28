@@ -23,7 +23,7 @@ async function run(body: () => Promise<ToolResult> | ToolResult): Promise<ToolRe
 }
 
 const brief = (s: Session) => ({
-  name: s.name, state: s.state, detail: s.detail || undefined, for_seconds: Math.round(s.ageS),
+  name: s.name, agent: s.agent, state: s.state, detail: s.detail || undefined, for_seconds: Math.round(s.ageS),
   dir: s.cwd, live: s.live, resumable: s.resumable,
 });
 
@@ -46,36 +46,37 @@ export async function runMcp(): Promise<void> {
   const version = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
   const server = new McpServer({ name: "clamux", version }, {
     instructions:
-      "Drives interactive Claude Code sessions that keep running in the background. Typical flow: create_session, " +
-      "then ask (send a prompt and get Claude's reply), repeat, and kill_session when done. A session that was " +
+      "Drives interactive Claude Code and Antigravity CLI (agy / Gemini) sessions that keep running in the background. Typical flow: create_session (pass agent: 'claude' or 'agy'/'gemini'), " +
+      "then ask (send a prompt and get the agent's reply), repeat, and kill_session when done. A session that was " +
       "killed or lost (e.g. after a reboot) can be brought back with resume_session. If a session is 'waiting', " +
       "it needs a keypress: read_screen, then press_keys.",
   });
 
   server.registerTool("list_sessions", {
     title: "List sessions",
-    description: "List all known Claude Code sessions with their state: working, idle, waiting (needs input), starting, ended or dead. 'resumable' sessions are not running but can be restarted with resume_session.",
+    description: "List all known Claude Code and Antigravity CLI (agy) sessions with their agent ('claude' or 'agy') and state: working, idle, waiting (needs input), starting, ended or dead. 'resumable' sessions are not running but can be restarted with resume_session.",
     annotations: { readOnlyHint: true },
   }, () => run(() => json(cx.list().map(brief))));
 
   server.registerTool("create_session", {
     title: "Create session",
-    description: "Start a new Claude Code session in a directory. It runs in the background until killed. Returns once Claude has started; if it is stuck on the first-time folder-trust prompt, the result says so and includes the screen.",
+    description: "Start a new Claude Code or Antigravity CLI (agy) session in a directory. It runs in the background until killed. Returns once the agent has started; if it is stuck on a startup/trust prompt, the result says so and includes the screen.",
     inputSchema: {
       name: z.string().describe("Letters, digits, - and _ only (max 32 characters)"),
       dir: z.string().optional().describe("Working directory (default: the directory clamux was started in)"),
-      claude_args: z.array(z.string()).optional().describe('Extra arguments for claude, e.g. ["--model", "opus"]'),
+      agent: z.enum(["claude", "agy", "gemini"]).optional().describe("Agent CLI to run: 'claude' (default) or 'agy' ('gemini' is an alias for 'agy')"),
+      claude_args: z.array(z.string()).optional().describe('Extra arguments for the agent CLI, e.g. ["--model", "opus"]'),
       notify: z.boolean().optional().describe("Desktop notification when the session finishes or needs input (default false)"),
     },
-  }, ({ name: n, dir, claude_args, notify }) => run(async () => {
-    const created = await cx.create(n, { dir, claudeArgs: claude_args, notify });
+  }, ({ name: n, dir, agent, claude_args, notify }) => run(async () => {
+    const created = await cx.create(n, { dir, agent, claudeArgs: claude_args, notify });
     const s = await cx.waitFor(n, (x) => x.state !== "starting", { timeoutMs: 20_000 }).catch(() => cx.get(n) ?? created);
     return s.state === "starting" ? stalled(s) : json(brief(s));
   }));
 
   server.registerTool("ask", {
     title: "Ask a session",
-    description: "Send a prompt to a session and wait for Claude to finish answering; returns Claude's final reply as text. If Claude stops for a permission prompt or runs past the timeout, returns the session state and screen instead (use press_keys / wait_for_session). Fails with BUSY if the session is already working.",
+    description: "Send a prompt to a session and wait for the agent (Claude or agy) to finish answering; returns its final reply as text. If it stops for a permission prompt or runs past the timeout, returns the session state and screen instead (use press_keys / wait_for_session). Fails with BUSY if the session is already working.",
     inputSchema: {
       name,
       prompt: z.string().min(1),
@@ -103,7 +104,7 @@ export async function runMcp(): Promise<void> {
 
   server.registerTool("wait_for_session", {
     title: "Wait for a session",
-    description: "Wait until a session stops working. Returns Claude's latest reply if it is idle, or the screen if it needs input.",
+    description: "Wait until a session stops working. Returns the agent's latest reply if it is idle, or the screen if it needs input.",
     inputSchema: { name, timeout_seconds: timeout(300) },
     annotations: { readOnlyHint: true },
   }, ({ name: n, timeout_seconds }) => run(async () => {
@@ -118,7 +119,7 @@ export async function runMcp(): Promise<void> {
 
   server.registerTool("get_answer", {
     title: "Get the latest answer",
-    description: "Claude's most recent reply in a session, as plain text, without sending anything.",
+    description: "The agent's most recent reply in a session, as plain text, without sending anything.",
     inputSchema: { name },
     annotations: { readOnlyHint: true },
   }, ({ name: n }) => run(() => text(cx.lastAnswer(n) ?? "(no reply yet)")));
@@ -141,7 +142,7 @@ export async function runMcp(): Promise<void> {
 
   server.registerTool("resume_session", {
     title: "Resume a session",
-    description: "Restart a saved session that is not running (killed, or lost to a reboot or crash) and continue its Claude conversation where it left off. If it never had a conversation it starts fresh.",
+    description: "Restart a saved session that is not running (killed, or lost to a reboot or crash) and continue its Claude or agy conversation where it left off. If it never had a conversation it starts fresh.",
     inputSchema: { name },
   }, ({ name: n }) => run(async () => {
     const r = await cx.resume(n);
