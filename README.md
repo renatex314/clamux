@@ -33,7 +33,9 @@ On Windows, run `npm link` instead (or call `node dist\cli.js`).
 |---|---|
 | `↑` `↓` / `j` `k` | select a session |
 | `Enter` | attach to it; press `Ctrl-b` then `d` to detach and come back to the dashboard |
-| `n` | new session (asks for a name, then a directory; press `Tab` to switch between `claude` and `agy`) |
+| `n` | new session: asks for a name, then opens a folder picker (`↑` `↓` move, `Enter`/`→` open a folder, `Enter` on "✓ use this folder" picks it, `←`/`Backspace` go up, type to filter, or type a path starting with `/` or `~`); `Tab` switches between `claude` and `agy` |
+| `u` | new session that continues an existing conversation: asks for a name, then a Claude session UUID (or an agy conversation id); it starts in the directory that conversation ran in |
+| `i` | send keys: every key (`Esc`, `Ctrl-c`, arrows...) goes to the selected session while the dashboard stays on screen; `Ctrl-b` then `d` stops, `Ctrl-b` `Ctrl-b` sends a literal `Ctrl-b` |
 | `s` | type a prompt into the selected session (asks first if it is busy) |
 | `r` | resume the selected session if it is not running |
 | `x` | kill the selected session (it stays saved, so `r` brings it back) |
@@ -41,11 +43,13 @@ On Windows, run `npm link` instead (or call `node dist\cli.js`).
 | `c` | remove leftover status entries |
 | `q` | quit (sessions keep running) |
 
-Scriptable subcommands: `clamux new <name> [dir] [-a claude|agy] [-d] [--no-notify] [-- <agent args>]`, `ls`, `attach`, `send <name> <prompt...> [--force]`, `peek`, `kill`, `resume <name> [-d]`, `resume --all`, `forget`, `clean`.
+Scriptable subcommands: `clamux new <name> [dir] [-a claude|agy] [-s <session id>] [-d] [--no-notify] [-- <agent args>]`, `ls`, `attach`, `send <name> <prompt...> [--force]`, `peek`, `kill`, `resume <name> [-d]`, `resume --all`, `forget`, `clean`.
 
 ## Saved sessions
 
 Every session is saved when you create it: `~/.clamux/saved/<name>.json` records its directory, the `claude` arguments, whether it notifies, and the id of the Claude conversation it holds (kept current by the hooks, so it follows `/clear`). Killing a session, rebooting, or a crash only stops the process - the record stays, and the session shows in the list as `ended` or `dead` with `resumable`. `clamux resume <name>` (or `r` in the dashboard) starts it again with `claude --resume <id>`, so the conversation continues where it left off. `clamux resume --all` restarts everything that is not running, e.g. after a reboot.
+
+A conversation you started outside clamux can be brought in too: `clamux new <name> -s <session uuid>` (or `u` in the dashboard, or `sessionId` / `session_id` in the SDK and MCP server) starts a session with `claude --resume <uuid>` in the directory that conversation ran in, found from its transcript under `~/.claude/projects`. With `-a agy` it takes an agy conversation id and uses `agy --conversation <id>`.
 
 If the session never had a conversation (nothing was sent before it stopped), there is nothing to resume, so it starts fresh with the same directory and arguments. `forget` (`d` in the dashboard) deletes the record; a name that is still saved cannot be reused by `new` until then.
 
@@ -117,7 +121,7 @@ for await (const change of cx.watch()) {                // every state change, u
 | Method | |
 |---|---|
 | `list()` / `get(name)` | session snapshots: `name`, `state`, `detail` (current tool), `ageS`, `cwd`, `live`, `sessionId`, `transcriptPath`, `resumable` |
-| `create(name, { dir, notify, claudeArgs })` | start a session (async) |
+| `create(name, { dir, agent, sessionId, notify, claudeArgs })` | start a session (async); `sessionId` continues an existing conversation |
 | `send(name, prompt, { force })` | type a prompt; throws `BUSY` if the session is working/waiting |
 | `ask(name, prompt, opts)` | `send` then wait until Claude finishes that turn (working -> idle); returns `{ session, answer, screen, transcriptPath }`, where `answer` is Claude's final reply as plain text |
 | `lastAnswer(name)` | Claude's most recent reply in the session (read from its transcript), or `null` |

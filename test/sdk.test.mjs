@@ -207,6 +207,27 @@ describe("Clamux SDK", () => {
     assert.equal(cx.get("broken"), undefined);
   });
 
+  test("create with sessionId continues a Claude conversation, in the directory it ran in", async () => {
+    process.env.CLAUDE_CONFIG_DIR = path.join(tmp, ".claude");
+    const id = "0b5e3f1c-7a2d-4c8e-9f10-2a3b4c5d6e7f";
+    const project = fs.realpathSync(fs.mkdtempSync(path.join(tmp, "proj-")));
+    const transcripts = path.join(tmp, ".claude/projects", project.replace(/[\\/:.]/g, "-"));
+    fs.mkdirSync(transcripts, { recursive: true });
+    fs.writeFileSync(path.join(transcripts, `${id}.jsonl`), `${JSON.stringify({ type: "user", cwd: project, sessionId: id })}\n`);
+
+    assert.equal(await code(cx.create("u", { sessionId: "not-a-uuid" })), "INVALID");
+    assert.equal(await code(cx.create("u", { sessionId: "11111111-2222-3333-4444-555555555555" })), "NOT_FOUND");
+    assert.equal(await code(cx.create("u", { sessionId: id, dir: tmp })), "INVALID"); // claude --resume needs its own dir
+    assert.equal(cx.get("u"), undefined);
+
+    const s = await cx.create("u", { sessionId: id });
+    assert.equal(s.cwd, project);
+    await cx.waitForIdle("u", { timeoutMs: 8000 });
+    assert.match(await cx.screen("u"), new RegExp(`ready args=--settings \\S+ --resume ${id}`));
+    await cx.kill("u");
+    cx.forget("u");
+  });
+
   test("supports Antigravity CLI (agy / gemini alias) sessions, hooks, transcripts, and --conversation resume", async () => {
     const s = await cx.create("g", { dir: tmp, agent: "gemini" });
     assert.equal(s.agent, "agy");

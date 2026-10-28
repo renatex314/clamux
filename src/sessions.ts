@@ -11,6 +11,7 @@ import { HOME_DIR, RUN_DIR, SETTINGS, configFile, errorFile, screenFile, selfPat
 import { liveSessions, pidAlive, readRegistry, removeRunFiles } from "./registry.js";
 import { parseAgent, readSaved, removeSaved, savedNames, writeSaved, type Agent } from "./saved.js";
 import { readStatus, removeStatus, statusNames, writeStatus } from "./status.js";
+import { findClaudeSession, isUuid } from "./transcript.js";
 
 export { liveSessions } from "./registry.js";
 export { parseAgent, type Agent } from "./saved.js";
@@ -105,17 +106,19 @@ export function removeAgyHooks(): boolean {
   }
 }
 
-/** Starts a detached host process for the session and waits until it is serving. */
+/**
+ * Starts a detached host process for the session and waits until it is serving.
+ * `dir` undefined means the current directory, or, with `sessionId`, the directory that conversation ran in.
+ * `sessionId` continues an existing conversation (`claude --resume <uuid>` / `agy --conversation <id>`).
+ */
 export async function createSession(
   name: string,
-  dir: string,
-  opts: { notify: boolean; agent?: Agent | "gemini"; claudeArgs?: string[] },
+  dir: string | undefined,
+  opts: { notify: boolean; agent?: Agent | "gemini"; claudeArgs?: string[]; sessionId?: string },
 ): Promise<Result> {
   if (!validName(name)) return fail("INVALID", "name may only contain letters, digits, - and _ (max 32 characters)");
   if (liveSessions().has(name)) return fail("EXISTS", `session '${name}' already exists`);
   if (readSaved(name)) return fail("EXISTS", `session '${name}' is saved; resume it, or forget it to reuse the name`);
-  const cwd = expandDir(dir);
-  if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) return fail("INVALID", `not a directory: ${cwd}`);
   let agent: Agent;
   try {
     agent = parseAgent(opts.agent);
@@ -123,10 +126,36 @@ export async function createSession(
     return fail("INVALID", e instanceof Error ? e.message : String(e));
   }
 
+  const sessionId = opts.sessionId?.trim() || null;
+  let transcriptPath: string | null = null;
+  let sessionCwd: string | null = null;
+  if (sessionId) {
+    if (agent === "claude") {
+      if (!isUuid(sessionId)) return fail("INVALID", `not a Claude session id (a UUID): ${sessionId}`);
+      const found = findClaudeSession(sessionId);
+      if (!found) return fail("NOT_FOUND", `no Claude conversation '${sessionId}' under ~/.claude/projects`);
+      transcriptPath = found.transcriptPath;
+      sessionCwd = found.cwd;
+    } else if (!/^[\w-]+$/.test(sessionId)) {
+      return fail("INVALID", `not a conversation id: ${sessionId}`);
+    }
+    const owner = savedNames().find((n) => readSaved(n)?.sessionId === sessionId);
+    if (owner) return fail("EXISTS", `conversation ${sessionId} already belongs to session '${owner}'`);
+  }
+
+  const cwd = expandDir(dir ?? sessionCwd ?? ".");
+  if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) return fail("INVALID", `not a directory: ${cwd}`);
+  if (sessionCwd && path.resolve(sessionCwd) !== cwd) {
+    return fail("INVALID", `conversation ${sessionId} belongs to ${sessionCwd}; leave the directory out or use that one`);
+  }
+
   const claudeArgs = opts.claudeArgs ?? [];
+  const startArgs = sessionId
+    ? [...withoutConversationArgs(claudeArgs), agent === "agy" ? "--conversation" : "--resume", sessionId]
+    : claudeArgs;
   // Saved before the host starts, so the first hook (which records the conversation id) finds it.
-  writeSaved(name, { cwd, agent, claudeArgs, notify: opts.notify, sessionId: null, transcriptPath: null, savedAt: Date.now() / 1000 });
-  const r = await startHost(name, cwd, agent, claudeArgs, opts.notify);
+  writeSaved(name, { cwd, agent, claudeArgs, notify: opts.notify, sessionId, transcriptPath, savedAt: Date.now() / 1000 });
+  const r = await startHost(name, cwd, agent, startArgs, opts.notify);
   if (!r.ok) removeSaved(name);
   return r;
 }
@@ -276,6 +305,21 @@ async function sendFrames(name: string, frames: Array<{ d: string; delayMs?: num
     return { ok: true };
   } catch (e) {
     return fail("HOST_FAILED", e instanceof Error ? e.message : String(e));
+  }
+}
+
+/** A connection that types into the session as keys arrive, in order (one socket, not one per key). */
+export async function openInput(
+  name: string,
+): Promise<{ ok: true; write: (d: string) => void; close: () => void } | Extract<Result, { ok: false }>> {
+  const info = readRegistry(name);
+  if (!info || !pidAlive(info.pid)) return fail("NOT_FOUND", `no live session '${name}'`) as Extract<Result, { ok: false }>;
+  try {
+    const sock = await connect(info.endpoint);
+    sock.on("error", () => {}); // the session ending mid-way is reported by the dashboard's own polling
+    return { ok: true, write: (d) => { if (!sock.destroyed) send(sock, { t: "input", d }); }, close: () => sock.end() };
+  } catch (e) {
+    return fail("HOST_FAILED", e instanceof Error ? e.message : String(e)) as Extract<Result, { ok: false }>;
   }
 }
 

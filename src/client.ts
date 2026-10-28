@@ -13,8 +13,10 @@ export type SessionState = DisplayState;
 export type { Agent };
 
 export interface CreateOptions {
-  /** Directory the session starts in. Default: the current working directory. */
+  /** Directory the session starts in. Default: the current working directory (with `sessionId`: the conversation's own). */
   dir?: string;
+  /** Continue an existing conversation: a Claude Code session UUID (`claude --resume`), or an agy conversation id. */
+  sessionId?: string;
   /** CLI backend to run: `"claude"` (default) or `"agy"` (`"gemini"` is accepted as an alias for `"agy"`). */
   agent?: Agent | "gemini";
   /** Desktop notification when the session goes idle or needs you. Default: false (the CLI/TUI default to true). */
@@ -92,9 +94,10 @@ export class Clamux {
 
   /** Starts a new detached session (`claude` by default, or `agy` when `opts.agent` is `"agy"` / `"gemini"`). */
   async create(name: string, opts: CreateOptions = {}): Promise<Session> {
-    unwrap(await createSession(name, opts.dir ?? ".", {
+    unwrap(await createSession(name, opts.dir, {
       notify: opts.notify ?? false,
       agent: opts.agent,
+      sessionId: opts.sessionId,
       claudeArgs: opts.args ?? opts.claudeArgs,
     }));
     return this.require(name);

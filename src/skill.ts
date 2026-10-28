@@ -18,7 +18,7 @@ Do not use it for work you can simply do yourself in this conversation. Each ses
 ## Workflow
 
 1. \`list_sessions\` first: a session with the right name or directory may already exist (\`live\`), or be \`resumable\`.
-2. \`create_session\` with a short \`name\` (letters, digits, \`-\`, \`_\`), the \`dir\` it should work in, and optional \`agent\` (\`"claude"\` by default, or \`"agy"\` / \`"gemini"\`).
+2. \`create_session\` with a short \`name\` (letters, digits, \`-\`, \`_\`), the \`dir\` it should work in, and optional \`agent\` (\`"claude"\` by default, or \`"agy"\` / \`"gemini"\`). To pick up an existing conversation instead, pass its id as \`session_id\` (a Claude Code session UUID or an agy conversation id) and leave \`dir\` out: it runs in the directory that conversation belongs to.
 3. \`ask\` to send a prompt and get the agent's final reply as text. Reply text only: tool calls and interface are left out.
 4. Repeat \`ask\` for follow-ups; the session keeps its conversation.
 5. \`kill_session\` when finished. It stays saved, so \`resume_session\` can continue the same conversation later. \`forget_session\` deletes it for good; only do that when the user wants it gone.

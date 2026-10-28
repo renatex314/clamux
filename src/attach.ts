@@ -2,15 +2,15 @@ import { connect, readMessages, send } from "./ipc.js";
 import { pidAlive, readRegistry } from "./registry.js";
 import { fail, type Result } from "./sessions.js";
 
-const PREFIX = "\x02"; // Ctrl-b: Ctrl-b d detaches, Ctrl-b Ctrl-b sends a literal Ctrl-b
+export const PREFIX = "\x02"; // Ctrl-b: Ctrl-b d detaches, Ctrl-b Ctrl-b sends a literal Ctrl-b
 const ALT_SCREEN_ON = "\x1b[?1049h";
 const ALT_SCREEN_OFF = "\x1b[?1049l\x1b[?25h";
 
 // Claude Code can switch the terminal into an enhanced keyboard mode (kitty protocol or
 // xterm modifyOtherKeys), where Ctrl-b arrives as an escape sequence instead of \x02.
-const KEY_TOKEN = /\x1b\[\d+(?:;\d+(?::\d+)?)*u|\x1b\[27;\d+;\d+~|[\s\S]/gu;
+export const KEY_TOKEN = /\x1b\[\d+(?:;\d+(?::\d+)?)*u|\x1b\[27;\d+;\d+~|[\s\S]/gu;
 
-function keyOf(tok: string): "ctrl-b" | "d" | undefined {
+export function keyOf(tok: string): "ctrl-b" | "d" | undefined {
   if (tok === PREFIX) return "ctrl-b";
   if (tok === "d") return "d";
   let code: number, mods: number;

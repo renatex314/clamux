@@ -1,11 +1,13 @@
+import type { EventEmitter } from "node:events";
 import { useEffect, useState } from "react";
-import { Box, Text, render, useApp, useInput, useStdout } from "ink";
+import { Box, Text, render, useApp, useInput, useStdin, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import { fmtAge, snapshot, type DisplayState, type Row } from "./status.js";
-import { attachSession } from "./attach.js";
+import { KEY_TOKEN, PREFIX, attachSession, keyOf } from "./attach.js";
+import { DirPicker } from "./dirpicker.js";
 import {
-  capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, resumeSession, sendPrompt, validName,
-  type Agent,
+  capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, openInput, resumeSession, sendPrompt,
+  validName, type Agent,
 } from "./sessions.js";
 
 const COLOR: Record<DisplayState, string> = {
@@ -14,15 +16,20 @@ const COLOR: Record<DisplayState, string> = {
 
 type Mode =
   | { kind: "list" }
-  | { kind: "new-name" }
+  | { kind: "new-name"; then: "dir" | "id" }
   | { kind: "new-dir"; name: string }
+  | { kind: "new-id"; name: string }
+  | { kind: "keys"; name: string }
   | { kind: "send"; name: string }
   | { kind: "confirm"; question: string; run: () => void | Promise<void> };
 
 interface Action { attach: string }
 
 const snap = () => snapshot(liveSessions());
-const home = (p: string) => p.replace(process.env.HOME ?? "\0", "~");
+const home = (p: string) => {
+  const h = process.env.HOME;
+  return h && (p === h || p.startsWith(h + "/")) ? "~" + p.slice(h.length) : p;
+};
 
 function useTick<T>(read: () => T, ms = 1000): [T, () => void] {
   const [v, setV] = useState(read);
@@ -57,6 +64,9 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
   const [newAgent, setNewAgent] = useState<Agent>("claude");
   const [input, setInput] = useState("");
   const [msg, setMsg] = useState("");
+  // Ink keeps the raw key sequences on an internal emitter; key passthrough forwards them byte for byte.
+  const keyEvents = (useStdin() as ReturnType<typeof useStdin> & { internal_eventEmitter?: EventEmitter })
+    .internal_eventEmitter;
 
   const idx = Math.max(0, rows.findIndex((r) => r.name === selName));
   const sel = rows[idx];
@@ -65,9 +75,9 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
   useEffect(() => {
     const read = () => setShown(previewName ? capturePane(previewName) : "");
     read();
-    const t = setInterval(read, 1000);
+    const t = setInterval(read, mode.kind === "keys" ? 150 : 1000); // typing wants a live preview
     return () => clearInterval(t);
-  }, [previewName]);
+  }, [previewName, mode.kind]);
 
   const counts = (["working", "waiting", "idle"] as const)
     .map((s) => [s, rows.filter((r) => r.state === s).length] as const)
@@ -75,12 +85,52 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
 
   const toList = (message = "") => { setMode({ kind: "list" }); setInput(""); setMsg(message); };
 
+  // Key passthrough: every key goes to the session, as if attached, while the dashboard stays on screen.
+  // Ctrl-b d stops (as it detaches an attach); Ctrl-b Ctrl-b sends a literal Ctrl-b.
+  const keysTo = mode.kind === "keys" ? mode.name : undefined;
+  useEffect(() => {
+    if (!keysTo) return;
+    if (!keyEvents) return toList("key passthrough is not supported by this Ink version");
+    let closed = false;
+    let channel: { write: (d: string) => void; close: () => void } | undefined;
+    const queued: string[] = [];
+    void openInput(keysTo).then((r) => {
+      if (!r.ok) return closed || toList(r.error);
+      if (closed) return r.close();
+      channel = r;
+      for (const d of queued.splice(0)) r.write(d);
+    });
+    const write = (d: string) => { if (d) (channel ? channel.write(d) : queued.push(d)); };
+    let pending = false;
+    const onInput = (data: string) => {
+      let out = "";
+      for (const tok of data.match(KEY_TOKEN) ?? []) {
+        const k = keyOf(tok);
+        if (pending) {
+          pending = false;
+          if (k === "d") { write(out); return toList(`stopped sending keys to '${keysTo}'`); }
+          out += k === "ctrl-b" ? tok : PREFIX + tok;
+        } else if (k === "ctrl-b") pending = true;
+        else out += tok;
+      }
+      write(out);
+    };
+    keyEvents.on("input", onInput);
+    return () => { closed = true; keyEvents.off("input", onInput); channel?.close(); };
+  }, [keysTo]);
+  useEffect(() => {
+    if (keysTo && !rows.find((r) => r.name === keysTo)?.live) toList(`'${keysTo}' stopped`);
+  }, [keysTo, rows]);
+
   const move = (d: number) => {
     if (rows.length === 0) return;
     setSelName(rows[(idx + d + rows.length) % rows.length]?.name);
   };
 
   useInput((ch, key) => {
+    if (mode.kind === "keys") return; // everything goes to the session
+    if (key.ctrl && ch === "c") return exit();
+    if (mode.kind === "new-dir") return; // the folder picker has the keyboard
     if (mode.kind === "list") {
       if (ch === "q") return exit();
       if (key.upArrow || ch === "k") return move(-1);
@@ -90,7 +140,12 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
         onAction({ attach: sel.name });
         return exit();
       }
-      if (ch === "n") { setMsg(""); return setMode({ kind: "new-name" }); }
+      if (ch === "n") { setMsg(""); return setMode({ kind: "new-name", then: "dir" }); }
+      if (ch === "u") { setMsg(""); return setMode({ kind: "new-name", then: "id" }); }
+      if (ch === "i" && sel) {
+        if (!sel.live) return setMsg(`'${sel.name}' is not running`);
+        setMsg(""); return setMode({ kind: "keys", name: sel.name });
+      }
       if (ch === "s" && sel) {
         if (!sel.live) return setMsg(`'${sel.name}' is not running`);
         setMsg(""); return setMode({ kind: "send", name: sel.name });
@@ -132,7 +187,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
       if (ch === "y") void mode.run();
       else if (ch === "n" || key.escape) toList("cancelled");
     } else {
-      if (key.tab && (mode.kind === "new-name" || mode.kind === "new-dir")) {
+      if (key.tab && (mode.kind === "new-name" || mode.kind === "new-id")) {
         setNewAgent((a) => (a === "claude" ? "agy" : "claude"));
       } else if (key.escape) {
         toList("cancelled");
@@ -140,18 +195,24 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
     }
   });
 
+  const start = async (name: string, dir: string | undefined, sessionId?: string) => {
+    setMsg(`starting '${name}' (${newAgent})...`);
+    const r = await createSession(name, dir, { notify: true, agent: newAgent, sessionId });
+    if (r.ok) setSelName(name);
+    toList(r.ok ? `started '${name}' (${newAgent}) - Enter to attach` : r.error);
+    refresh();
+  };
+
   const submit = async (value: string) => {
     const v = value.trim();
     if (mode.kind === "new-name") {
       if (!validName(v)) return setMsg("name: letters, digits, - and _ only");
-      setInput(""); setMsg(""); return setMode({ kind: "new-dir", name: v });
+      setInput(""); setMsg("");
+      return setMode(mode.then === "id" ? { kind: "new-id", name: v } : { kind: "new-dir", name: v });
     }
-    if (mode.kind === "new-dir") {
-      setMsg(`starting '${mode.name}' (${newAgent})...`);
-      const r = await createSession(mode.name, v || process.cwd(), { notify: true, agent: newAgent });
-      if (r.ok) setSelName(mode.name);
-      toList(r.ok ? `started '${mode.name}' (${newAgent}) - Enter to attach` : r.error);
-      return refresh();
+    if (mode.kind === "new-id") {
+      if (!v) return setMsg("paste the session id");
+      return start(mode.name, undefined, v);
     }
     if (mode.kind === "send") {
       if (!v) return toList();
@@ -199,8 +260,22 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
           })}
         </Box>
 
-        <Box flexDirection="column" flexGrow={1} flexShrink={1} width={0} borderStyle="round" borderColor="gray" paddingX={1}>
-          {sel ? (
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} width={0} borderStyle="round"
+          borderColor={mode.kind === "keys" ? "magenta" : mode.kind === "new-dir" ? "cyan" : "gray"} paddingX={1}>
+          {mode.kind === "new-dir" ? (
+            <>
+              <Text wrap="truncate-end">
+                <Text bold color="cyan">folder for '{mode.name}'</Text>
+                <Text dimColor>  [{newAgent}, Tab: switch]</Text>
+              </Text>
+              <DirPicker
+                start={process.cwd()} height={bodyH - 3} active
+                onPick={(dir) => void start(mode.name, dir)}
+                onCancel={() => toList("cancelled")}
+                onTab={() => setNewAgent((a) => (a === "claude" ? "agy" : "claude"))}
+              />
+            </>
+          ) : sel ? (
             <>
               <Text wrap="truncate-end">
                 <Text bold>{sel.name}</Text>
@@ -223,15 +298,27 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
 
       <Box flexDirection="column">
         {mode.kind === "list" && (
-          <Text dimColor>↑↓ select  ⏎ attach (Ctrl-b d: back)  n new  r resume  s send  x kill  d delete  c clean  q quit</Text>
+          <Text dimColor wrap="truncate-end">
+            ↑↓ select  ⏎ attach (Ctrl-b d: back)  i keys  n new  u new from id  r resume  s send  x kill  d delete  c clean  q quit
+          </Text>
         )}
-        {(mode.kind === "new-name" || mode.kind === "new-dir" || mode.kind === "send") && (
+        {mode.kind === "keys" && (
+          <Text color="magenta" bold>
+            sending every key to '{mode.name}'  ·  Ctrl-b d: back to the dashboard  ·  Ctrl-b Ctrl-b: a literal Ctrl-b
+          </Text>
+        )}
+        {mode.kind === "new-dir" && (
+          <Text dimColor wrap="truncate-end">
+            ↑↓ move  ⏎/→ open  ⏎ on ✓ use it  ←/⌫ parent  type to filter  Tab agent  Esc cancel
+          </Text>
+        )}
+        {(mode.kind === "new-name" || mode.kind === "new-id" || mode.kind === "send") && (
           <Box>
             <Text color="cyan">
               {mode.kind === "new-name"
-                ? `new ${newAgent} session name (Tab: switch agent): `
-                : mode.kind === "new-dir"
-                  ? `directory for '${mode.name}' [${newAgent}, Tab: switch] [${process.cwd()}]: `
+                ? `new ${newAgent} session name${mode.then === "id" ? " (continuing a conversation)" : ""} (Tab: switch agent): `
+                : mode.kind === "new-id"
+                  ? `${newAgent === "agy" ? "agy conversation id" : "Claude session id (UUID)"} for '${mode.name}' (Tab: switch agent): `
                   : `prompt for '${mode.name}': `}
             </Text>
             <TextInput value={input} onChange={setInput} onSubmit={submit} />
@@ -252,7 +339,8 @@ export async function runTui(): Promise<void> {
     let action: Action | undefined;
     process.stdout.write(ALT_ON);
     try {
-      const app = render(<App onAction={(a) => { action = a; }} />);
+      // Ctrl-c is handled by the app, so key passthrough can send it to the session.
+      const app = render(<App onAction={(a) => { action = a; }} />, { exitOnCtrlC: false });
       await app.waitUntilExit();
     } finally {
       process.stdout.write(ALT_OFF);

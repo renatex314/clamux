@@ -1,4 +1,42 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+export const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+
+/**
+ * Finds a Claude Code conversation by id: `<config dir>/projects/<project>/<id>.jsonl`, and the directory it ran in
+ * (`claude --resume` only finds a conversation from its own project directory).
+ */
+export function findClaudeSession(id: string): { transcriptPath: string; cwd: string | null } | null {
+  if (!isUuid(id)) return null;
+  const projects = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "projects");
+  let dirs: string[];
+  try {
+    dirs = fs.readdirSync(projects);
+  } catch {
+    return null;
+  }
+  for (const d of dirs) {
+    const transcriptPath = path.join(projects, d, `${id}.jsonl`);
+    if (!fs.existsSync(transcriptPath)) continue;
+    let cwd: string | null = null;
+    try {
+      const fd = fs.openSync(transcriptPath, "r");
+      const buf = Buffer.alloc(256 * 1024);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      fs.closeSync(fd);
+      for (const line of buf.toString("utf8", 0, n).split("\n")) {
+        const m = /"cwd":("(?:[^"\\]|\\.)*")/.exec(line);
+        if (m?.[1]) { cwd = JSON.parse(m[1]) as string; break; }
+      }
+    } catch {
+      // unreadable: the caller falls back to the directory it was given
+    }
+    return { transcriptPath, cwd };
+  }
+  return null;
+}
 
 /** Transcripts grow large (every API request is stored); the answer is always near the end. */
 const TAIL_BYTES = 4 * 1024 * 1024;

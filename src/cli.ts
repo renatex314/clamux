@@ -12,7 +12,7 @@ import {
 const HELP = `clamux - manage multiple Claude Code and Antigravity CLI (agy) sessions, with live working/idle status.
 
   clamux                          open the interactive dashboard (TUI)
-  clamux new <name> [dir] [-a claude|agy] [-d] [--no-notify] [-- <agent args>]
+  clamux new <name> [dir] [-a claude|agy] [-s <session id>] [-d] [--no-notify] [-- <agent args>]
   clamux ls
   clamux attach <name>            (detach with Ctrl-b d)
   clamux send <name> <prompt...> [--force]
@@ -95,15 +95,17 @@ async function main(): Promise<void> {
         allowPositionals: true,
         options: {
           agent: { type: "string", short: "a" },
+          session: { type: "string", short: "s" },
           detach: { type: "boolean", short: "d" },
           "no-notify": { type: "boolean" },
         },
       });
-      const [name, dir = "."] = positionals;
-      if (!name) die("usage: clamux new <name> [dir] [-a claude|agy] [-d] [--no-notify] [-- <agent args>]");
+      const [name, dir] = positionals;
+      if (!name) die("usage: clamux new <name> [dir] [-a claude|agy] [-s <session id>] [-d] [--no-notify] [-- <agent args>]");
       must(await createSession(name, dir, {
         notify: !values["no-notify"],
         agent: values.agent as "claude" | "agy" | "gemini" | undefined,
+        sessionId: values.session,
         claudeArgs,
       }));
       console.log(`started '${name}'`);

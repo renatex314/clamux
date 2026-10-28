@@ -65,11 +65,12 @@ export async function runMcp(): Promise<void> {
       name: z.string().describe("Letters, digits, - and _ only (max 32 characters)"),
       dir: z.string().optional().describe("Working directory (default: the directory clamux was started in)"),
       agent: z.enum(["claude", "agy", "gemini"]).optional().describe("Agent CLI to run: 'claude' (default) or 'agy' ('gemini' is an alias for 'agy')"),
+      session_id: z.string().optional().describe("Continue an existing conversation: a Claude Code session UUID, or an agy conversation id. The directory defaults to the one that conversation ran in"),
       claude_args: z.array(z.string()).optional().describe('Extra arguments for the agent CLI, e.g. ["--model", "opus"]'),
       notify: z.boolean().optional().describe("Desktop notification when the session finishes or needs input (default false)"),
     },
-  }, ({ name: n, dir, agent, claude_args, notify }) => run(async () => {
-    const created = await cx.create(n, { dir, agent, claudeArgs: claude_args, notify });
+  }, ({ name: n, dir, agent, session_id, claude_args, notify }) => run(async () => {
+    const created = await cx.create(n, { dir, agent, sessionId: session_id, claudeArgs: claude_args, notify });
     const s = await cx.waitFor(n, (x) => x.state !== "starting", { timeoutMs: 20_000 }).catch(() => cx.get(n) ?? created);
     return s.state === "starting" ? stalled(s) : json(brief(s));
   }));
