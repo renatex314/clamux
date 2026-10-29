@@ -250,6 +250,42 @@ describe("Clamux SDK", () => {
     cx.forget("u");
   });
 
+  test("groups give new sessions their defaults, and sessions can move between groups", async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(tmp, "grp-")));
+    assert.equal(throwsCode(() => cx.setGroup("bad name!")), "INVALID");
+    assert.equal(throwsCode(() => cx.setGroup("w", { dir: "/definitely/not/here" })), "INVALID");
+    assert.equal(await code(cx.create("gx", { group: "nope" })), "NOT_FOUND");
+
+    const g = cx.setGroup("w", { dir, notify: false, args: ["--model", "opus"] });
+    assert.deepEqual(g, { name: "w", dir, notify: false, args: ["--model", "opus"], sessions: [] });
+
+    const s = await cx.create("ga", { group: "w" });
+    assert.equal(s.cwd, dir);
+    assert.equal(s.group, "w");
+    await cx.waitForIdle("ga", { timeoutMs: 8000 });
+    assert.match(await cx.screen("ga"), /ready args=--settings \S+ --model opus/);
+    const saved = JSON.parse(fs.readFileSync(path.join(tmp, ".clamux/saved/ga.json"), "utf8"));
+    assert.equal(saved.notify, false);
+    assert.equal(saved.group, "w");
+    // Explicit options win over the group's.
+    assert.equal((await cx.create("gb", { group: "w", dir: tmp })).cwd, tmp);
+    assert.deepEqual(cx.groups().map((x) => [x.name, x.sessions]), [["w", ["ga", "gb"]]]);
+
+    // Changing a field keeps the others; null clears one.
+    assert.deepEqual(cx.setGroup("w", { args: null }), { name: "w", dir, notify: false, sessions: ["ga", "gb"] });
+
+    cx.moveToGroup("gb", null);
+    assert.equal(cx.get("gb").group, null);
+    assert.equal(throwsCode(() => cx.moveToGroup("gb", "nope")), "NOT_FOUND");
+    cx.moveToGroup("gb", "w");
+    cx.removeGroup("w");
+    assert.deepEqual(cx.groups(), []);
+    assert.equal(cx.get("ga").group, null);
+    assert.equal(cx.get("ga").live, true); // deleting a group leaves its sessions alone
+    assert.equal(throwsCode(() => cx.removeGroup("w")), "NOT_FOUND");
+    for (const n of ["ga", "gb"]) { await cx.kill(n); cx.forget(n); }
+  });
+
   test("supports Antigravity CLI (agy / gemini alias) sessions, hooks, transcripts, and --conversation resume", async () => {
     const s = await cx.create("g", { dir: tmp, agent: "gemini" });
     assert.equal(s.agent, "agy");

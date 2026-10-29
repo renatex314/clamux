@@ -3,14 +3,29 @@ import { readStatus, snapshot, type DisplayState, type Row } from "./status.js";
 import { attachSession } from "./attach.js";
 import { lastAnswer } from "./transcript.js";
 import {
-  capturePane, cleanStale, createSession, fetchScreen, forgetSession, killSession, liveSessions, pressKeys,
-  resumeSession, sendPrompt, type Agent, type Result,
+  capturePane, cleanStale, createSession, fetchScreen, forgetSession, groupMembers, killSession, liveSessions,
+  moveSession, pressKeys, readGroups, removeGroup, resumeSession, sendPrompt, setGroup, type Agent, type Group,
+  type Result,
 } from "./sessions.js";
 
 /** A snapshot of one session. */
 export type Session = Row;
 export type SessionState = DisplayState;
-export type { Agent };
+export type { Agent, Group };
+
+/** A group and the sessions in it. */
+export interface GroupInfo extends Group {
+  name: string;
+  sessions: string[];
+}
+
+/** Changes to a group's defaults: a field that is passed replaces the old value, `null` removes it. */
+export interface GroupSettings {
+  dir?: string | null;
+  notify?: boolean | null;
+  agent?: Agent | "gemini" | null;
+  args?: string[] | null;
+}
 
 export interface CreateOptions {
   /** Directory the session starts in. Default: the current working directory (with `sessionId`: the conversation's own). */
@@ -19,8 +34,10 @@ export interface CreateOptions {
   sessionId?: string;
   /** CLI backend to run: `"claude"` (default) or `"agy"` (`"gemini"` is accepted as an alias for `"agy"`). */
   agent?: Agent | "gemini";
-  /** Desktop notification when the session goes idle or needs you. Default: false (the CLI/TUI default to true). */
+  /** Desktop notification when the session goes idle or needs you. Default: the group's, else false (the CLI/TUI default to true). */
   notify?: boolean;
+  /** Put the session in this group; the group's defaults fill in `dir`, `notify`, `agent` and `args` when they are left out. */
+  group?: string;
   /** Extra arguments passed to the agent CLI (`claude` or `agy`), e.g. ["--model", "opus"]. */
   claudeArgs?: string[];
   /** Alias for `claudeArgs`. */
@@ -95,9 +112,10 @@ export class Clamux {
   /** Starts a new detached session (`claude` by default, or `agy` when `opts.agent` is `"agy"` / `"gemini"`). */
   async create(name: string, opts: CreateOptions = {}): Promise<Session> {
     unwrap(await createSession(name, opts.dir, {
-      notify: opts.notify ?? false,
+      notify: opts.notify,
       agent: opts.agent,
       sessionId: opts.sessionId,
+      group: opts.group,
       claudeArgs: opts.args ?? opts.claudeArgs,
     }));
     return this.require(name);
@@ -234,6 +252,30 @@ export class Clamux {
   /** Removes status entries of sessions that are neither running nor saved. Returns their names. */
   clean(): string[] {
     return cleanStale();
+  }
+
+  /** All groups, with their defaults and sessions. */
+  groups(): GroupInfo[] {
+    const members = groupMembers();
+    return Object.entries(readGroups())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, g]) => ({ ...g, name, sessions: (members.get(name) ?? []).sort() }));
+  }
+
+  /** Creates a group, or changes the defaults of an existing one. Sessions already in it keep their settings. */
+  setGroup(name: string, settings: GroupSettings = {}): GroupInfo {
+    unwrap(setGroup(name, settings));
+    return this.groups().find((g) => g.name === name) as GroupInfo;
+  }
+
+  /** Deletes a group; its sessions keep running, without a group. */
+  removeGroup(name: string): void {
+    unwrap(removeGroup(name));
+  }
+
+  /** Puts a session in a group, or takes it out of its group with `null`. */
+  moveToGroup(name: string, group: string | null): void {
+    unwrap(moveSession(name, group));
   }
 
   private require(name: string): Session {

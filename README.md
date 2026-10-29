@@ -31,8 +31,8 @@ On Windows, run `npm link` instead (or call `node dist\cli.js`).
 
 | Key | Action |
 |---|---|
-| `↑` `↓` / `j` `k` | select a session |
-| `Enter` | attach to it; press `Ctrl-b` then `d` to detach and come back to the dashboard |
+| `↑` `↓` / `j` `k` | select a session or a group |
+| `Enter` | attach to it; press `Ctrl-b` then `d` to detach and come back to the dashboard. On a group: fold or unfold it |
 | `n` | new session: asks for a name, then opens a folder picker (`↑` `↓` move, `Enter`/`→` open a folder, `Enter` on "✓ use this folder" picks it, `←`/`Backspace` go up, type to filter, or type a path starting with `/` or `~`); `Tab` switches between `claude` and `agy` |
 | `u` | new session that continues an existing conversation: asks for a name, then a Claude session UUID (or an agy conversation id); it starts in the directory that conversation ran in |
 | `i` | send keys: every key (`Esc`, `Ctrl-c`, arrows...) goes to the selected session while the dashboard stays on screen; `Ctrl-b` then `d` stops, `Ctrl-b` `Ctrl-b` sends a literal `Ctrl-b` |
@@ -40,10 +40,29 @@ On Windows, run `npm link` instead (or call `node dist\cli.js`).
 | `r` | resume the selected session if it is not running |
 | `x` | kill the selected session (it stays saved, so `r` brings it back) |
 | `d` | delete the selected session and its saved record |
+| `g` | new group: asks for a name, then the folder its sessions start in (`Tab` picks the agent), then whether they notify |
+| `e` | edit the selected group (or the selected session's group) |
+| `m` | move the selected session to another group, or out of its group |
+| `d` on a group | delete the group; its sessions stay, without a group |
 | `c` | remove leftover status entries |
 | `q` | quit (sessions keep running) |
 
-Scriptable subcommands: `clamux new <name> [dir] [-a claude|agy] [-s <session id>] [-d] [--no-notify] [-- <agent args>]`, `ls`, `attach`, `send <name> <prompt...> [--force]`, `peek`, `kill`, `resume <name> [-d]`, `resume --all`, `forget`, `clean`, `notify` (test notification).
+Scriptable subcommands: `clamux new <name> [dir] [-g <group>] [-a claude|agy] [-s <session id>] [-d] [--notify|--no-notify] [-- <agent args>]`, `ls`, `attach`, `send <name> <prompt...> [--force]`, `peek`, `kill`, `resume <name> [-d]`, `resume --all`, `forget`, `clean`, `notify` (test notification), and `group ls|set|rm|move` (see below).
+
+## Groups
+
+Groups collect sessions under a heading in the dashboard and give the sessions created in them defaults: the folder they start in, whether they notify, the agent, and extra agent arguments. In the dashboard, `n` with a group (or a session in it) selected creates the session in that group, with the folder picker opened at the group's folder, so `Enter` takes it. Options you pass explicitly win over the group's; changing a group only affects sessions created afterwards.
+
+```sh
+clamux group set web --dir ~/projects/web --no-notify -- --model opus   # create, or change only the options given
+clamux group set web -a agy                                            # --no-dir / --no-args remove a default
+clamux new api -g web -d                                               # starts in ~/projects/web, no notifications
+clamux group move api other                                            # or `clamux group move api` to ungroup it
+clamux group ls
+clamux group rm web                                                    # its sessions keep running, ungrouped
+```
+
+Groups live in `~/.clamux/groups.json`; a session's group is kept in its saved record.
 
 ## Saved sessions
 
@@ -88,8 +107,9 @@ Other clients: `{ "mcpServers": { "clamux": { "command": "npx", "args": ["-y", "
 
 | Tool | |
 |---|---|
-| `list_sessions` | all sessions with state (`working`, `idle`, `waiting`, ...) and whether they are `resumable` |
-| `create_session` | start a session in a directory (`name`, `dir`, `claude_args`, `notify`) |
+| `list_sessions` | all sessions with state (`working`, `idle`, `waiting`, ...), group, and whether they are `resumable` |
+| `list_groups` | groups with their defaults and sessions |
+| `create_session` | start a session in a directory (`name`, `dir`, `agent`, `session_id`, `group`, `claude_args`, `notify`) |
 | `ask` | send a prompt, wait for Claude to finish, return its final reply as text |
 | `send_prompt` / `wait_for_session` / `get_answer` | the same in separate steps: send and return, wait until it stops working, read the latest reply |
 | `read_screen` / `press_keys` | see the terminal and send keystrokes, e.g. to answer a permission prompt |
@@ -120,8 +140,9 @@ for await (const change of cx.watch()) {                // every state change, u
 
 | Method | |
 |---|---|
-| `list()` / `get(name)` | session snapshots: `name`, `state`, `detail` (current tool), `ageS`, `cwd`, `live`, `sessionId`, `transcriptPath`, `resumable` |
-| `create(name, { dir, agent, sessionId, notify, claudeArgs })` | start a session (async); `sessionId` continues an existing conversation |
+| `list()` / `get(name)` | session snapshots: `name`, `state`, `detail` (current tool), `ageS`, `cwd`, `group`, `live`, `sessionId`, `transcriptPath`, `resumable` |
+| `create(name, { dir, agent, sessionId, group, notify, claudeArgs })` | start a session (async); `sessionId` continues an existing conversation; `group` fills in what is left out from the group's defaults |
+| `groups()` / `setGroup(name, { dir, notify, agent, args })` / `removeGroup(name)` / `moveToGroup(name, group \| null)` | manage groups (`null` clears a default) |
 | `send(name, prompt, { force })` | type a prompt; throws `BUSY` if the session is working/waiting |
 | `ask(name, prompt, opts)` | `send` then wait until Claude finishes that turn (working -> idle); returns `{ session, answer, screen, transcriptPath }`, where `answer` is Claude's final reply as plain text |
 | `lastAnswer(name)` | Claude's most recent reply in the session (read from its transcript), or `null` |

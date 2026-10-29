@@ -53,7 +53,7 @@ describe("clamux MCP server", () => {
     const { tools } = await client.listTools();
     const names = tools.map((t) => t.name).sort();
     assert.deepEqual(names, [
-      "ask", "create_session", "forget_session", "get_answer", "kill_session", "list_sessions",
+      "ask", "create_session", "forget_session", "get_answer", "kill_session", "list_groups", "list_sessions",
       "press_keys", "read_screen", "resume_session", "send_prompt", "wait_for_session",
     ]);
     assert.deepEqual(tools.find((t) => t.name === "ask").inputSchema.required.sort(), ["name", "prompt"]);

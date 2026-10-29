@@ -5,14 +5,14 @@ import { fmtAge, snapshot, type DisplayState } from "./status.js";
 import { attachSession } from "./attach.js";
 import { configFile, SETTINGS } from "./paths.js";
 import {
-  capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, resumeSession, sendPrompt,
-  type Result,
+  capturePane, cleanStale, createSession, forgetSession, groupMembers, killSession, liveSessions, moveSession,
+  readGroups, removeGroup, resumeSession, sendPrompt, setGroup, type Result,
 } from "./sessions.js";
 
 const HELP = `clamux - manage multiple Claude Code and Antigravity CLI (agy) sessions, with live working/idle status.
 
   clamux                          open the interactive dashboard (TUI)
-  clamux new <name> [dir] [-a claude|agy] [-s <session id>] [-d] [--no-notify] [-- <agent args>]
+  clamux new <name> [dir] [-g <group>] [-a claude|agy] [-s <session id>] [-d] [--notify|--no-notify] [-- <agent args>]
   clamux ls
   clamux attach <name>            (detach with Ctrl-b d)
   clamux send <name> <prompt...> [--force]
@@ -22,6 +22,11 @@ const HELP = `clamux - manage multiple Claude Code and Antigravity CLI (agy) ses
   clamux resume --all             restart every saved session that is not running
   clamux forget <name>            delete a stopped session and its saved record
   clamux clean                    remove status files of sessions that are gone
+  clamux group ls                 list groups and their defaults
+  clamux group set <group> [--dir <dir>|--no-dir] [-a claude|agy] [--notify|--no-notify] [-- <agent args>]
+                                  create a group, or change its defaults for new sessions
+  clamux group rm <group>         delete a group (its sessions stay, without a group)
+  clamux group move <name> [group]  put a session in a group (no group: take it out)
   clamux mcp                      run as an MCP server on stdio (for Claude Code, agy, and other MCP clients)
   clamux notify                   show a test desktop notification (and why it failed, if it did)
   clamux setup [--remove]         register the MCP server and a usage skill with Claude Code and agy
@@ -47,11 +52,73 @@ function ls(): void {
   if (rows.length === 0) return void console.log("no sessions (clamux new <name>)");
   const color = process.stdout.isTTY;
   const w = Math.max(4, ...rows.map((r) => r.name.length));
-  console.log(`${"NAME".padEnd(w)}  ${"AGENT".padEnd(6)}  ${"STATE".padEnd(8)}  ${"FOR".padEnd(7)}  ${"DETAIL".padEnd(50)}  DIR`);
+  const gw = Math.max(5, ...rows.map((r) => (r.group ?? "-").length));
+  console.log(`${"NAME".padEnd(w)}  ${"GROUP".padEnd(gw)}  ${"AGENT".padEnd(6)}  ${"STATE".padEnd(8)}  ${"FOR".padEnd(7)}  ${"DETAIL".padEnd(50)}  DIR`);
   for (const r of rows) {
     const s = r.state.padEnd(8);
     const state = color ? `\x1b[${COLORS[r.state]}m${s}\x1b[0m` : s;
-    console.log(`${r.name.padEnd(w)}  ${r.agent.padEnd(6)}  ${state}  ${fmtAge(r.ageS).padEnd(7)}  ${r.detail.padEnd(50)}  ${r.cwd}`);
+    console.log(`${r.name.padEnd(w)}  ${(r.group ?? "-").padEnd(gw)}  ${r.agent.padEnd(6)}  ${state}  ${fmtAge(r.ageS).padEnd(7)}  ${r.detail.padEnd(50)}  ${r.cwd}`);
+  }
+}
+
+function group([sub, ...rest]: string[], agentArgs: string[]): void {
+  switch (sub) {
+    case undefined:
+    case "ls": {
+      const groups = readGroups();
+      const members = groupMembers();
+      const names = Object.keys(groups).sort();
+      if (names.length === 0) return void console.log("no groups (clamux group set <group> --dir <dir>)");
+      for (const n of names) {
+        const g = groups[n]!;
+        const parts = [
+          `dir: ${g.dir ?? "(current directory)"}`,
+          `notify: ${g.notify === false ? "off" : "on"}`,
+          ...(g.agent ? [`agent: ${g.agent}`] : []),
+          ...(g.args?.length ? [`args: ${g.args.join(" ")}`] : []),
+        ];
+        const ss = members.get(n) ?? [];
+        console.log(`${n}  ${parts.join("  ")}\n  sessions: ${ss.length ? ss.sort().join(", ") : "-"}`);
+      }
+      return;
+    }
+    case "set": {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        allowPositionals: true,
+        options: {
+          dir: { type: "string" },
+          "no-dir": { type: "boolean" },
+          agent: { type: "string", short: "a" },
+          notify: { type: "boolean" },
+          "no-notify": { type: "boolean" },
+          "no-args": { type: "boolean" },
+        },
+      });
+      const [name] = positionals;
+      if (!name) die("usage: clamux group set <group> [--dir <dir>|--no-dir] [-a claude|agy] [--notify|--no-notify] [--no-args | -- <agent args>]");
+      const isNew = !readGroups()[name];
+      must(setGroup(name, {
+        dir: values["no-dir"] ? null : values.dir,
+        // A new group notifies, like a session started from the CLI.
+        notify: values["no-notify"] ? false : values.notify || isNew ? true : undefined,
+        agent: values.agent as "claude" | "agy" | "gemini" | undefined,
+        args: values["no-args"] ? null : agentArgs.length ? agentArgs : undefined,
+      }));
+      return void console.log(`${isNew ? "created" : "updated"} group '${name}'`);
+    }
+    case "rm": {
+      if (!rest[0]) die("usage: clamux group rm <group>");
+      must(removeGroup(rest[0]));
+      return void console.log(`deleted group '${rest[0]}'`);
+    }
+    case "move": {
+      if (!rest[0]) die("usage: clamux group move <name> [group]");
+      must(moveSession(rest[0], rest[1] ?? null));
+      return void console.log(rest[1] ? `moved '${rest[0]}' to '${rest[1]}'` : `took '${rest[0]}' out of its group`);
+    }
+    default:
+      die(`unknown group command '${sub}' (ls, set, rm, move)`);
   }
 }
 
@@ -107,17 +174,21 @@ async function main(): Promise<void> {
         options: {
           agent: { type: "string", short: "a" },
           session: { type: "string", short: "s" },
+          group: { type: "string", short: "g" },
           detach: { type: "boolean", short: "d" },
+          notify: { type: "boolean" },
           "no-notify": { type: "boolean" },
         },
       });
       const [name, dir] = positionals;
-      if (!name) die("usage: clamux new <name> [dir] [-a claude|agy] [-s <session id>] [-d] [--no-notify] [-- <agent args>]");
+      if (!name) die("usage: clamux new <name> [dir] [-g <group>] [-a claude|agy] [-s <session id>] [-d] [--notify|--no-notify] [-- <agent args>]");
       must(await createSession(name, dir, {
-        notify: !values["no-notify"],
+        // Notifications are on by default, unless the group says otherwise.
+        notify: values["no-notify"] ? false : values.notify ? true : (values.group ? readGroups()[values.group]?.notify : undefined) ?? true,
         agent: values.agent as "claude" | "agy" | "gemini" | undefined,
         sessionId: values.session,
-        claudeArgs,
+        group: values.group,
+        claudeArgs: claudeArgs.length ? claudeArgs : undefined,
       }));
       console.log(`started '${name}'`);
       if (!values.detach) must(await attachSession(name));
@@ -177,6 +248,8 @@ async function main(): Promise<void> {
       must(forgetSession(rest[0]));
       return void console.log(`forgot '${rest[0]}'`);
     }
+    case "group":
+      return group(rest, claudeArgs);
     case "clean": {
       const stale = cleanStale();
       return void console.log(`removed ${stale.length} stale status file(s)`);

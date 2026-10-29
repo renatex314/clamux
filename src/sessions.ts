@@ -5,16 +5,18 @@ import path from "node:path";
 import type { ErrorCode } from "./errors.js";
 import { childEnv } from "./env.js";
 import type { HostConfig } from "./host.js";
+import { readGroups, writeGroups, type Group } from "./groups.js";
 import { connect, readMessages, send } from "./ipc.js";
 import { keyToBytes } from "./keys.js";
 import { HOME_DIR, RUN_DIR, SETTINGS, configFile, errorFile, screenFile, selfPath } from "./paths.js";
 import { liveSessions, pidAlive, readRegistry, removeRunFiles } from "./registry.js";
-import { parseAgent, readSaved, removeSaved, savedNames, writeSaved, type Agent } from "./saved.js";
+import { parseAgent, readSaved, removeSaved, savedNames, updateSaved, writeSaved, type Agent } from "./saved.js";
 import { readStatus, removeStatus, statusNames, writeStatus } from "./status.js";
 import { findClaudeSession, isUuid } from "./transcript.js";
 
 export { liveSessions } from "./registry.js";
 export { parseAgent, type Agent } from "./saved.js";
+export { readGroups, type Group } from "./groups.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -110,18 +112,23 @@ export function removeAgyHooks(): boolean {
  * Starts a detached host process for the session and waits until it is serving.
  * `dir` undefined means the current directory, or, with `sessionId`, the directory that conversation ran in.
  * `sessionId` continues an existing conversation (`claude --resume <uuid>` / `agy --conversation <id>`).
+ * In a `group`, the group's defaults fill in whatever `dir`, `notify`, `agent` and `claudeArgs` leave out.
  */
 export async function createSession(
   name: string,
   dir: string | undefined,
-  opts: { notify: boolean; agent?: Agent | "gemini"; claudeArgs?: string[]; sessionId?: string },
+  opts: { notify?: boolean; agent?: Agent | "gemini"; claudeArgs?: string[]; sessionId?: string; group?: string },
 ): Promise<Result> {
   if (!validName(name)) return fail("INVALID", "name may only contain letters, digits, - and _ (max 32 characters)");
   if (liveSessions().has(name)) return fail("EXISTS", `session '${name}' already exists`);
   if (readSaved(name)) return fail("EXISTS", `session '${name}' is saved; resume it, or forget it to reuse the name`);
+  const group = opts.group || null;
+  const groups = readGroups();
+  if (group && !groups[group]) return fail("NOT_FOUND", `no group '${group}'`);
+  const g: Group = (group && groups[group]) || {};
   let agent: Agent;
   try {
-    agent = parseAgent(opts.agent);
+    agent = parseAgent(opts.agent ?? g.agent);
   } catch (e) {
     return fail("INVALID", e instanceof Error ? e.message : String(e));
   }
@@ -143,19 +150,20 @@ export async function createSession(
     if (owner) return fail("EXISTS", `conversation ${sessionId} already belongs to session '${owner}'`);
   }
 
-  const cwd = expandDir(dir ?? sessionCwd ?? ".");
+  const cwd = expandDir(dir ?? sessionCwd ?? g.dir ?? ".");
   if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) return fail("INVALID", `not a directory: ${cwd}`);
   if (sessionCwd && path.resolve(sessionCwd) !== cwd) {
     return fail("INVALID", `conversation ${sessionId} belongs to ${sessionCwd}; leave the directory out or use that one`);
   }
 
-  const claudeArgs = opts.claudeArgs ?? [];
+  const claudeArgs = opts.claudeArgs ?? g.args ?? [];
+  const notify = opts.notify ?? g.notify ?? false;
   const startArgs = sessionId
     ? [...withoutConversationArgs(claudeArgs), agent === "agy" ? "--conversation" : "--resume", sessionId]
     : claudeArgs;
   // Saved before the host starts, so the first hook (which records the conversation id) finds it.
-  writeSaved(name, { cwd, agent, claudeArgs, notify: opts.notify, sessionId, transcriptPath, savedAt: Date.now() / 1000 });
-  const r = await startHost(name, cwd, agent, startArgs, opts.notify);
+  writeSaved(name, { cwd, agent, claudeArgs, notify, sessionId, transcriptPath, group, savedAt: Date.now() / 1000 });
+  const r = await startHost(name, cwd, agent, startArgs, notify);
   if (!r.ok) removeSaved(name);
   return r;
 }
@@ -205,6 +213,75 @@ export function forgetSession(name: string): Result {
   removeSaved(name);
   removeStatus(name);
   removeRunFiles(name);
+  return { ok: true };
+}
+
+/** Sessions (saved records) in each group. */
+export function groupMembers(): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const n of savedNames()) {
+    const g = readSaved(n)?.group;
+    if (g) out.set(g, [...(out.get(g) ?? []), n]);
+  }
+  return out;
+}
+
+/**
+ * Creates a group, or changes the defaults of an existing one: fields that are passed replace the old ones,
+ * and `null` removes one. Existing sessions keep the settings they were started with.
+ */
+export function setGroup(
+  name: string,
+  fields: { dir?: string | null; notify?: boolean | null; agent?: Agent | "gemini" | null; args?: string[] | null },
+): Result {
+  if (!validName(name)) return fail("INVALID", "group name may only contain letters, digits, - and _ (max 32 characters)");
+  const groups = readGroups();
+  const g: Group = { ...groups[name] };
+  if (fields.dir !== undefined) {
+    if (fields.dir === null || fields.dir === "") delete g.dir;
+    else {
+      const d = expandDir(fields.dir);
+      if (!fs.existsSync(d) || !fs.statSync(d).isDirectory()) return fail("INVALID", `not a directory: ${d}`);
+      g.dir = d;
+    }
+  }
+  if (fields.notify !== undefined) {
+    if (fields.notify === null) delete g.notify;
+    else g.notify = fields.notify;
+  }
+  if (fields.agent !== undefined) {
+    if (fields.agent === null) delete g.agent;
+    else {
+      try {
+        g.agent = parseAgent(fields.agent);
+      } catch (e) {
+        return fail("INVALID", e instanceof Error ? e.message : String(e));
+      }
+    }
+  }
+  if (fields.args !== undefined) {
+    if (fields.args === null || fields.args.length === 0) delete g.args;
+    else g.args = fields.args;
+  }
+  writeGroups({ ...groups, [name]: g });
+  return { ok: true };
+}
+
+/** Deletes a group. Its sessions are not touched, except that they no longer belong to a group. */
+export function removeGroup(name: string): Result {
+  const groups = readGroups();
+  if (!groups[name]) return fail("NOT_FOUND", `no group '${name}'`);
+  for (const n of groupMembers().get(name) ?? []) updateSaved(n, { group: null });
+  delete groups[name];
+  writeGroups(groups);
+  return { ok: true };
+}
+
+/** Puts a session in a group, or takes it out of its group with `null`. */
+export function moveSession(name: string, group: string | null): Result {
+  if (!readSaved(name)) return fail("NOT_FOUND", `no saved session '${name}'`);
+  if (group && !readGroups()[group]) return fail("NOT_FOUND", `no group '${group}'`);
+  updateSaved(name, { group });
   return { ok: true };
 }
 

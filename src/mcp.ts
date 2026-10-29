@@ -24,7 +24,7 @@ async function run(body: () => Promise<ToolResult> | ToolResult): Promise<ToolRe
 
 const brief = (s: Session) => ({
   name: s.name, agent: s.agent, state: s.state, detail: s.detail || undefined, for_seconds: Math.round(s.ageS),
-  dir: s.cwd, live: s.live, resumable: s.resumable,
+  dir: s.cwd, group: s.group ?? undefined, live: s.live, resumable: s.resumable,
 });
 
 const name = z.string().describe("Session name, as shown by list_sessions");
@@ -58,6 +58,12 @@ export async function runMcp(): Promise<void> {
     annotations: { readOnlyHint: true },
   }, () => run(() => json(cx.list().map(brief))));
 
+  server.registerTool("list_groups", {
+    title: "List groups",
+    description: "List session groups: each has defaults (dir, agent, args, notify) for the sessions created in it, and the names of its sessions. Pass a group to create_session to use them.",
+    annotations: { readOnlyHint: true },
+  }, () => run(() => json(cx.groups())));
+
   server.registerTool("create_session", {
     title: "Create session",
     description: "Start a new Claude Code or Antigravity CLI (agy) session in a directory. It runs in the background until killed. Returns once the agent has started; if it is stuck on a startup/trust prompt, the result says so and includes the screen.",
@@ -67,10 +73,11 @@ export async function runMcp(): Promise<void> {
       agent: z.enum(["claude", "agy", "gemini"]).optional().describe("Agent CLI to run: 'claude' (default) or 'agy' ('gemini' is an alias for 'agy')"),
       session_id: z.string().optional().describe("Continue an existing conversation: a Claude Code session UUID, or an agy conversation id. The directory defaults to the one that conversation ran in"),
       claude_args: z.array(z.string()).optional().describe('Extra arguments for the agent CLI, e.g. ["--model", "opus"]'),
-      notify: z.boolean().optional().describe("Desktop notification when the session finishes or needs input (default false)"),
+      notify: z.boolean().optional().describe("Desktop notification when the session finishes or needs input (default: the group's, else false)"),
+      group: z.string().optional().describe("Put the session in this group (see list_groups); the group's defaults fill in dir, agent, claude_args and notify when they are left out"),
     },
-  }, ({ name: n, dir, agent, session_id, claude_args, notify }) => run(async () => {
-    const created = await cx.create(n, { dir, agent, sessionId: session_id, claudeArgs: claude_args, notify });
+  }, ({ name: n, dir, agent, session_id, claude_args, notify, group }) => run(async () => {
+    const created = await cx.create(n, { dir, agent, sessionId: session_id, claudeArgs: claude_args, notify, group });
     const s = await cx.waitFor(n, (x) => x.state !== "starting", { timeoutMs: 20_000 }).catch(() => cx.get(n) ?? created);
     return s.state === "starting" ? stalled(s) : json(brief(s));
   }));

@@ -28,6 +28,8 @@ export interface Row {
   live: boolean;
   sessionId: string | null;
   transcriptPath: string | null;
+  /** The group the session belongs to, if any. */
+  group: string | null;
   /** Not running, but a saved record exists, so `resume` can bring it back. */
   resumable: boolean;
 }
@@ -83,6 +85,7 @@ export function describe(name: string, live: Set<string>): Row {
     live: live.has(name),
     sessionId: st?.session_id ?? sv?.sessionId ?? null,
     transcriptPath: st?.transcript_path ?? sv?.transcriptPath ?? null,
+    group: sv?.group ?? null,
     resumable: !live.has(name) && sv !== null,
   };
   if (!base.live) {

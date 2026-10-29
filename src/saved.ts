@@ -18,6 +18,8 @@ export interface Saved {
   notify: boolean;
   sessionId: string | null;
   transcriptPath: string | null;
+  /** The group the session belongs to, if any. */
+  group?: string | null;
   savedAt: number;
 }
 
