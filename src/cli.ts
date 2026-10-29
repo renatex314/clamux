@@ -23,6 +23,7 @@ const HELP = `clamux - manage multiple Claude Code and Antigravity CLI (agy) ses
   clamux forget <name>            delete a stopped session and its saved record
   clamux clean                    remove status files of sessions that are gone
   clamux mcp                      run as an MCP server on stdio (for Claude Code, agy, and other MCP clients)
+  clamux notify                   show a test desktop notification (and why it failed, if it did)
   clamux setup [--remove]         register the MCP server and a usage skill with Claude Code and agy
 
 Status comes from lifecycle hooks (loaded per session via \`claude --settings\` for Claude Code,
@@ -75,6 +76,16 @@ async function main(): Promise<void> {
       const { setup, unsetup } = await import("./setup.js");
       const r = values.remove ? unsetup() : setup();
       r.lines.forEach((l) => console.log(l));
+      if (!r.ok) process.exit(1);
+      return;
+    }
+    case "notify": {
+      const { notifyTest, NOTIFY_LOG } = await import("./notify.js");
+      const r = notifyTest("clamux", "Test notification - if you can see this, notifications work");
+      if (r.out) console.log(r.out);
+      console.log(r.ok
+        ? `notification sent; if none appeared, check the OS notification settings (errors from sessions go to ${NOTIFY_LOG})`
+        : "the notification failed (see above)");
       if (!r.ok) process.exit(1);
       return;
     }

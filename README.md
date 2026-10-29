@@ -43,7 +43,7 @@ On Windows, run `npm link` instead (or call `node dist\cli.js`).
 | `c` | remove leftover status entries |
 | `q` | quit (sessions keep running) |
 
-Scriptable subcommands: `clamux new <name> [dir] [-a claude|agy] [-s <session id>] [-d] [--no-notify] [-- <agent args>]`, `ls`, `attach`, `send <name> <prompt...> [--force]`, `peek`, `kill`, `resume <name> [-d]`, `resume --all`, `forget`, `clean`.
+Scriptable subcommands: `clamux new <name> [dir] [-a claude|agy] [-s <session id>] [-d] [--no-notify] [-- <agent args>]`, `ls`, `attach`, `send <name> <prompt...> [--force]`, `peek`, `kill`, `resume <name> [-d]`, `resume --all`, `forget`, `clean`, `notify` (test notification).
 
 ## Saved sessions
 
@@ -53,11 +53,11 @@ A conversation you started outside clamux can be brought in too: `clamux new <na
 
 If the session never had a conversation (nothing was sent before it stopped), there is nothing to resume, so it starts fresh with the same directory and arguments. `forget` (`d` in the dashboard) deletes the record; a name that is still saved cannot be reused by `new` until then.
 
-A desktop notification fires when a session goes from working to idle, or needs your permission (macOS: Notification Center with a sound; Windows: toast; Linux: `notify-send`). Pass `--no-notify` to `new` to disable it.
+A desktop notification fires when a session goes from working to idle, or needs your permission (macOS: Notification Center with a sound; Windows: toast; Linux: `notify-send`). Pass `--no-notify` to `new` to disable it. Sessions started from the SDK or the MCP server only notify when created with `notify: true`. `clamux notify` shows a test notification and prints why it failed, if it did; errors from sessions' notifications go to `~/.clamux/notify.log`.
 
 ## How it works
 
-Each session is a small detached host process (`clamux host <name>`) that owns the Claude Code process through a pseudo-terminal and keeps a virtual screen of what it draws. The host listens on a unix socket (a named pipe on Windows). `attach` connects your terminal to it (replaying the current screen first), `send` and `press` write input to it, and the host also keeps a plain-text copy of the screen in `~/.clamux/run/` so the dashboard preview and `peek` are cheap. Sessions keep running when you close the dashboard or your terminal.
+Each session is a small detached host process (`clamux host <name>`) that owns the Claude Code process through a pseudo-terminal and keeps a virtual screen of what it draws. The host listens on a unix socket (a named pipe on Windows). `attach` connects your terminal to it (replaying the current screen first), `send` and `press` write input to it, and the host also keeps a plain-text copy of the screen in `~/.clamux/run/` so the dashboard preview and `peek` are cheap. Sessions keep running when you close the dashboard or your terminal. On Windows the host uses the ConPTY that ships with node-pty (the one Windows Terminal uses) instead of the older one built into Windows, which leaves stray characters behind when Claude Code scrolls; set `CLAMUX_CONPTY_DLL=0` to go back to the built-in one.
 
 ## MCP server
 

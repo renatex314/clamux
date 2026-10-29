@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import { notify } from "./notify.js";
 import { updateSaved } from "./saved.js";
 import { readStatus, writeStatus, type HookState, type Status } from "./status.js";
 
@@ -56,15 +55,13 @@ export function runHook(eventArg?: string): void {
         return;
     }
 
-    const prev = writeStatus(name, {
+    writeStatus(name, {
       session_id: sessionId, cwd, transcript_path: transcriptPath, ...fields,
     });
     // Keep the saved record pointing at the conversation the CLI currently holds (it changes on /clear).
     if (sessionId) updateSaved(name, { sessionId, transcriptPath });
-    if (process.env.CLAMUX_NOTIFY === "1" && fields.state !== prev) {
-      if (fields.state === "idle" && prev === "working") notify(`clamux: ${name}`, "Finished - waiting for your next prompt");
-      else if (fields.state === "waiting") notify(`clamux: ${name}`, fields.message || "Needs your attention");
-    }
+    // Notifications are sent by the session host, which sees this status change: a hook process is gone
+    // within milliseconds, before a slow notifier (PowerShell on Windows) has shown anything.
   } catch {
     // swallow: a status hook must never disturb the session
   }

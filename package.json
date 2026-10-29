@@ -1,6 +1,6 @@
 {
   "name": "@renatex314/clamux",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Dashboard, CLI and SDK to run multiple Claude Code sessions with live working/idle status (macOS, Linux, Windows)",
   "type": "module",
   "bin": {

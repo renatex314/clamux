@@ -7,6 +7,7 @@ import { RUN_DIR, endpointFor, errorFile, screenFile } from "./paths.js";
 import { readMessages, send, type Msg } from "./ipc.js";
 import { removeRunFiles, writeRegistry } from "./registry.js";
 import type { Agent } from "./saved.js";
+import { notify } from "./notify.js";
 import { readStatus, writeStatus } from "./status.js";
 
 export interface HostConfig {
@@ -54,6 +55,8 @@ function resolveCommand(cmd: string, args: string[]): { file: string; args: stri
 }
 
 const SCREEN_WRITE_MS = 120;
+/** How often the host checks the status the hooks write, to notify on changes. */
+const NOTIFY_POLL_MS = 300;
 
 const MOUSE_MODES: Record<string, string> = { x10: "9", vt200: "1000", drag: "1002", any: "1003" };
 
@@ -85,13 +88,24 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
   const { file, args } = isAgy
     ? resolveCommand("agy", agyArgs)
     : resolveCommand("claude", ["--settings", settingsPath, ...cfg.claudeArgs]);
-  const proc = pty.spawn(file, args, {
+  const ptyOpts = {
     name: "xterm-256color",
     cols: cfg.cols,
     rows: cfg.rows,
     cwd: cfg.cwd,
     env: childEnv({ TERM: "xterm-256color", COLORTERM: "truecolor" }),
-  });
+  };
+  // On Windows, use the ConPTY that ships with node-pty (Windows Terminal's) rather than the one built into
+  // Windows: the built-in one mangles some redraws (e.g. scrolling inside Claude Code leaves stray characters).
+  // CLAMUX_CONPTY_DLL=0 goes back to the built-in one.
+  const bundledConpty = process.platform === "win32" && process.env.CLAMUX_CONPTY_DLL !== "0";
+  let proc: ReturnType<typeof pty.spawn>;
+  try {
+    proc = pty.spawn(file, args, bundledConpty ? { ...ptyOpts, useConptyDll: true } : ptyOpts);
+  } catch (e) {
+    if (!bundledConpty) throw e;
+    proc = pty.spawn(file, args, ptyOpts);
+  }
 
   const attached = new Set<net.Socket>();
   let exited = false;
@@ -215,6 +229,19 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
       if (!exited) proc.kill();
       else shutdown(0);
     });
+  }
+
+  // Desktop notifications on the status changes the hooks record.
+  if (process.env.CLAMUX_NOTIFY === "1") {
+    let last = readStatus(name)?.state;
+    setInterval(() => {
+      const st = readStatus(name);
+      if (!st || st.state === last) return;
+      const prev = last;
+      last = st.state;
+      if (st.state === "idle" && prev === "working") notify(`clamux: ${name}`, "Finished - waiting for your next prompt");
+      else if (st.state === "waiting") notify(`clamux: ${name}`, st.message || "Needs your attention");
+    }, NOTIFY_POLL_MS).unref();
   }
 
   writeScreen();

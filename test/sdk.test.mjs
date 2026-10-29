@@ -207,6 +207,28 @@ describe("Clamux SDK", () => {
     assert.equal(cx.get("broken"), undefined);
   });
 
+  // powershell.exe is started without a shell, so a .cmd stand-in would not be found on Windows.
+  test("a session created with notify sends a desktop notification from its host when it finishes", {
+    skip: process.platform === "win32" && "needs a stand-in powershell.exe",
+  }, async () => {
+    // Stand-ins for the notifier; the title and message also reach it in its environment.
+    const log = path.join(tmp, "notified.log");
+    for (const n of ["osascript", "notify-send"]) {
+      fs.writeFileSync(path.join(bin, n), `#!/bin/sh\necho "$CLAMUX_TITLE $CLAMUX_MSG" >> "${log}"\n`, { mode: 0o755 });
+    }
+    try {
+      await cx.create("n", { dir: tmp, notify: true });
+      await cx.waitForIdle("n", { timeoutMs: 8000 });
+      await cx.ask("n", "ping", { timeoutMs: 10000 });
+      for (let i = 0; i < 40 && !fs.existsSync(log); i++) await sleep(100);
+      assert.match(fs.readFileSync(log, "utf8"), /clamux: n Finished - waiting for your next prompt/);
+    } finally {
+      for (const n of ["osascript", "notify-send"]) fs.rmSync(path.join(bin, n), { force: true });
+      await cx.kill("n").catch(() => {});
+      cx.forget("n");
+    }
+  });
+
   test("create with sessionId continues a Claude conversation, in the directory it ran in", async () => {
     process.env.CLAUDE_CONFIG_DIR = path.join(tmp, ".claude");
     const id = "0b5e3f1c-7a2d-4c8e-9f10-2a3b4c5d6e7f";
