@@ -49,7 +49,11 @@ export function notify(title: string, message: string): void {
     } catch {
       // no log, still notify
     }
-    const child = spawn(cmd, args, { stdio: ["ignore", "ignore", err], detached: true, windowsHide: true, env });
+    // Not detached on Windows: that is DETACHED_PROCESS, and powershell.exe started that way from a process
+    // without a console (the session host) exits 0 without running the script, so no toast and no error.
+    const child = spawn(cmd, args, {
+      stdio: ["ignore", "ignore", err], detached: process.platform !== "win32", windowsHide: true, env,
+    });
     if (typeof err === "number") fs.closeSync(err);
     child.on("error", (e) => {
       try {
