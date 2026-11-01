@@ -23,7 +23,40 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 hook("SessionStart");
 console.log(`ready args=${process.argv.slice(2).join(" ")}`);
-for await (const line of readline.createInterface({ input: process.stdin })) {
+// FAKE_BRACKETED=1: like Claude Code, ask for bracketed paste and take a prompt as pasted text + Enter
+// (a newline inside a paste is part of the prompt; Enter outside one submits it).
+async function* bracketedPrompts() {
+  process.stdin.setRawMode?.(true);
+  process.stdout.write("\x1b[?2004h");
+  let buf = "", text = "", pasting = false;
+  for await (const chunk of process.stdin) {
+    buf += chunk.toString("utf8");
+    for (;;) {
+      if (pasting) {
+        const end = buf.indexOf("\x1b[201~");
+        if (end < 0) { text += buf; buf = ""; break; }
+        text += buf.slice(0, end); buf = buf.slice(end + 6); pasting = false;
+        process.stdout.write(`[pasted ${text.length} chars]`);
+      } else if (buf.startsWith("\x1b[200~")) {
+        buf = buf.slice(6); pasting = true;
+      } else if (buf.startsWith("\r")) {
+        buf = buf.slice(1);
+        process.stdout.write("\r\n");
+        yield text.replace(/\r/g, "\n");
+        text = "";
+      } else if (buf) {
+        const next = buf.search(/\x1b\[200~|\r/);
+        const typed = next < 0 ? buf : buf.slice(0, next);
+        text += typed; buf = buf.slice(typed.length);
+        process.stdout.write(typed);
+        if (next < 0) break;
+      } else break;
+    }
+  }
+}
+
+const prompts = process.env.FAKE_BRACKETED === "1" ? bracketedPrompts() : readline.createInterface({ input: process.stdin });
+for await (const line of prompts) {
   hook("UserPromptSubmit");
   log("user", line);
   hook("PreToolUse");

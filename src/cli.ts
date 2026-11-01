@@ -6,7 +6,7 @@ import { attachSession } from "./attach.js";
 import { configFile, SETTINGS } from "./paths.js";
 import {
   capturePane, cleanStale, createSession, forgetSession, groupMembers, killSession, liveSessions, moveSession,
-  readGroups, removeGroup, resumeSession, sendPrompt, setGroup, type Result,
+  readConfig, readGroups, removeGroup, resumeSession, sendPrompt, setGroup, writeConfig, type Result,
 } from "./sessions.js";
 
 const HELP = `clamux - manage multiple Claude Code and Antigravity CLI (agy) sessions, with live working/idle status.
@@ -28,6 +28,9 @@ const HELP = `clamux - manage multiple Claude Code and Antigravity CLI (agy) ses
   clamux group rm <group>         delete a group (its sessions stay, without a group)
   clamux group move <name> [group]  put a session in a group (no group: take it out)
   clamux mcp                      run as an MCP server on stdio (for Claude Code, agy, and other MCP clients)
+  clamux config                   show the settings that apply to every session
+  clamux config skip-permissions on|off
+                                  start every Claude Code session with --dangerously-skip-permissions
   clamux notify                   show a test desktop notification (and why it failed, if it did)
   clamux setup [--remove]         register the MCP server and a usage skill with Claude Code and agy
 
@@ -250,6 +253,18 @@ async function main(): Promise<void> {
     }
     case "group":
       return group(rest, claudeArgs);
+    case "config": {
+      const [key, value] = rest;
+      if (key === undefined) {
+        const c = readConfig();
+        return void console.log(`skip-permissions  ${c.skipPermissions ? "on" : "off"}`);
+      }
+      if (key !== "skip-permissions" || (value !== "on" && value !== "off")) die("usage: clamux config skip-permissions on|off");
+      writeConfig({ skipPermissions: value === "on" });
+      return void console.log(value === "on"
+        ? "Claude Code sessions now start with --dangerously-skip-permissions (from the next start or resume; Claude asks to confirm it once)"
+        : "Claude Code sessions start with normal permission prompts again (from the next start or resume)");
+    }
     case "clean": {
       const stale = cleanStale();
       return void console.log(`removed ${stale.length} stale status file(s)`);

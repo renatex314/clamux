@@ -250,6 +250,41 @@ describe("Clamux SDK", () => {
     cx.forget("u");
   });
 
+  test("a long multi-line prompt arrives whole, as a bracketed paste, when the app supports it", async () => {
+    process.env.FAKE_BRACKETED = "1";
+    try {
+      await cx.create("p", { dir: tmp });
+    } finally {
+      delete process.env.FAKE_BRACKETED;
+    }
+    await cx.waitForIdle("p", { timeoutMs: 8000 });
+    const section = (i) => `## Seção ${i} (obrigatório)\n\n- item com \`código\` e # e ! no meio\n- ação: não 🚀\n`;
+    const prompt = `# Objetivo\n\n${Array.from({ length: 60 }, (_, i) => section(i)).join("\n")}\n## Testes (obrigatório)\nfim`;
+    assert.ok(prompt.length > 4000);
+    const r = await cx.ask("p", prompt, { timeoutMs: 15000 });
+    assert.equal(r.answer, `answer: ${prompt}`);
+    await cx.kill("p");
+    cx.forget("p");
+  });
+
+  test("the skip-permissions setting starts Claude sessions with --dangerously-skip-permissions", async () => {
+    const config = path.join(tmp, ".clamux/config.json");
+    execFileSync(process.execPath, [path.join(root, "dist/cli.js"), "config", "skip-permissions", "on"], { env: process.env });
+    try {
+      await cx.create("k", { dir: tmp, args: ["--model", "opus"] });
+      await cx.waitForIdle("k", { timeoutMs: 8000 });
+      assert.match(await cx.screen("k"), /ready args=--settings \S+ --dangerously-skip-permissions --model opus/);
+      await cx.kill("k");
+    } finally {
+      fs.rmSync(config, { force: true });
+    }
+    await cx.resume("k"); // off again: a resumed session drops it
+    await cx.waitForIdle("k", { timeoutMs: 8000 });
+    assert.doesNotMatch(await cx.screen("k"), /dangerously/);
+    await cx.kill("k");
+    cx.forget("k");
+  });
+
   test("groups give new sessions their defaults, and sessions can move between groups", async () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(tmp, "grp-")));
     assert.equal(throwsCode(() => cx.setGroup("bad name!")), "INVALID");

@@ -1,12 +1,14 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import type net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { ErrorCode } from "./errors.js";
 import { childEnv } from "./env.js";
 import type { HostConfig } from "./host.js";
+import { readConfig } from "./config.js";
 import { readGroups, writeGroups, type Group } from "./groups.js";
-import { connect, readMessages, send } from "./ipc.js";
+import { connect, readMessages, send, type Msg } from "./ipc.js";
 import { keyToBytes } from "./keys.js";
 import { HOME_DIR, RUN_DIR, SETTINGS, configFile, errorFile, screenFile, selfPath } from "./paths.js";
 import { liveSessions, pidAlive, readRegistry, removeRunFiles } from "./registry.js";
@@ -17,6 +19,7 @@ import { findClaudeSession, isUuid } from "./transcript.js";
 export { liveSessions } from "./registry.js";
 export { parseAgent, type Agent } from "./saved.js";
 export { readGroups, type Group } from "./groups.js";
+export { readConfig, writeConfig, type Config } from "./config.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -302,6 +305,9 @@ async function startHost(name: string, cwd: string, agent: Agent, claudeArgs: st
       return fail("HOST_FAILED", e instanceof Error ? e.message : String(e));
     }
   } else writeSettings();
+  // Applied at every start, not stored with the session, so turning it off also affects resumed sessions.
+  const skip = "--dangerously-skip-permissions";
+  if (agent === "claude" && readConfig().skipPermissions && !claudeArgs.includes(skip)) claudeArgs = [skip, ...claudeArgs];
   removeStatus(name);
   removeRunFiles(name);
   fs.mkdirSync(RUN_DIR, { recursive: true });
@@ -400,9 +406,46 @@ export async function openInput(
   }
 }
 
-export function sendPrompt(name: string, text: string): Promise<Result> {
-  // Enter goes in a separate write so the TUI has ingested the text first.
-  return sendFrames(name, [{ d: text }, { d: "\r", delayMs: 300 }]);
+/**
+ * Types a prompt into the session and submits it. The host pastes it (bracketed paste) and presses Enter once the
+ * app has drawn it; this fails, without submitting anything, if the text never showed up.
+ */
+export async function sendPrompt(name: string, text: string): Promise<Result> {
+  const info = readRegistry(name);
+  if (!info || !pidAlive(info.pid)) return fail("NOT_FOUND", `no live session '${name}'`);
+  let sock: net.Socket;
+  try {
+    sock = await connect(info.endpoint);
+  } catch (e) {
+    return fail("HOST_FAILED", e instanceof Error ? e.message : String(e));
+  }
+  const waiting = new Map<string, (m: Msg | null) => void>();
+  readMessages(sock, (m) => waiting.get(m.t)?.(m));
+  sock.on("close", () => waiting.forEach((done) => done(null)));
+  sock.on("error", () => {});
+  const reply = (t: string, ms: number) => new Promise<Msg | null>((resolve) => {
+    const timer = setTimeout(() => done(null), ms);
+    const done = (m: Msg | null) => { clearTimeout(timer); waiting.delete(t); resolve(m); };
+    waiting.set(t, done);
+  });
+  try {
+    const pong = reply("pong", 2000);
+    send(sock, { t: "ping" });
+    if (!(await pong)?.prompt) {
+      // A host started by an older clamux: type the text, then Enter in a separate write.
+      send(sock, { t: "input", d: text });
+      await sleep(300);
+      send(sock, { t: "input", d: "\r" });
+      return { ok: true };
+    }
+    const done = reply("prompted", 60_000);
+    send(sock, { t: "prompt", d: text });
+    const r = await done;
+    if (!r) return fail("HOST_FAILED", "the session host did not confirm the prompt");
+    return r.ok ? { ok: true } : fail("HOST_FAILED", String(r.error));
+  } finally {
+    if (!sock.destroyed) await new Promise<void>((resolve) => { sock.once("close", resolve); sock.end(resolve); });
+  }
 }
 
 /** Sends raw key names (e.g. "Enter", "Down", "C-c") or literal text. */

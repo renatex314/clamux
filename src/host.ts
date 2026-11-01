@@ -55,8 +55,16 @@ function resolveCommand(cmd: string, args: string[]): { file: string; args: stri
 }
 
 const SCREEN_WRITE_MS = 120;
+/** A prompt is pasted in pieces this long (in characters), a moment apart, so no input buffer overflows. */
+const PASTE_CHUNK = 1024;
+/** After pasting, Enter waits until the app has drawn nothing for this long (it may still be ingesting the text)... */
+const PASTE_SETTLE_MS = 250;
+/** ...but no longer than this. */
+const PASTE_MAX_WAIT_MS = 10_000;
 /** How often the host checks the status the hooks write, to notify on changes. */
 const NOTIFY_POLL_MS = 300;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const MOUSE_MODES: Record<string, string> = { x10: "9", vt200: "1000", drag: "1002", any: "1003" };
 
@@ -109,6 +117,7 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
 
   const attached = new Set<net.Socket>();
   let exited = false;
+  let lastOutputAt = 0;
 
   const screenText = () => {
     const b = term.buffer.active;
@@ -144,6 +153,7 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
   };
 
   proc.onData((d) => {
+    lastOutputAt = Date.now();
     // Broadcast only after the emulator has parsed the data, so a client that joins in the
     // middle (snapshot taken in a write callback) neither misses nor duplicates output.
     term.write(d, () => {
@@ -167,12 +177,61 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
     }
   };
 
+  /**
+   * Types a prompt and submits it. The text goes in as a bracketed paste when the app asked for those (Claude
+   * Code and agy do): typed as plain keys, its newlines and some characters (`#`, `!`, `/` at the start, Esc...)
+   * act as shortcuts, and a long prompt reaches the app in bursts it can mistake for several inputs. Enter is
+   * only pressed once the app has drawn the text, and not at all if the screen never changed.
+   */
+  const typePrompt = async (text: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+    const flushed = () => new Promise<void>((r) => term.write("", r));
+    await flushed();
+    const before = screenText();
+    const startedAt = Date.now();
+    const bracketed = term.modes.bracketedPasteMode;
+    const body = bracketed ? text.replace(/\r?\n/g, "\r") : text;
+    if (bracketed) proc.write("\x1b[200~");
+    let chunk = "";
+    for (const ch of body) { // by code point, so no character is split between writes
+      chunk += ch;
+      if (chunk.length >= PASTE_CHUNK) {
+        proc.write(chunk);
+        chunk = "";
+        await sleep(10);
+      }
+    }
+    if (chunk) proc.write(chunk);
+    if (bracketed) proc.write("\x1b[201~");
+    for (;;) {
+      await sleep(50);
+      if (exited) return { ok: false, error: "the session ended while the prompt was being typed" };
+      const quiet = Date.now() - Math.max(lastOutputAt, startedAt) >= PASTE_SETTLE_MS;
+      if (quiet || Date.now() - startedAt >= PASTE_MAX_WAIT_MS) break;
+    }
+    await flushed();
+    if (text.trim() && screenText() === before) {
+      return { ok: false, error: "the prompt did not show up in the session, so it was not submitted" };
+    }
+    proc.write("\r");
+    return { ok: true };
+  };
+
+  let typing = Promise.resolve();
+
   const server = net.createServer((sock) => {
     readMessages(sock, (m: Msg) => {
       switch (m.t) {
         case "input":
           if (!exited) proc.write(String(m.d ?? ""));
           break;
+        case "prompt": { // one at a time, so two prompts never interleave
+          const text = String(m.d ?? "");
+          typing = typing.then(async () => {
+            const r = exited ? { ok: false, error: "the session has ended" } : await typePrompt(text);
+            send(sock, { t: "prompted", ...r });
+          });
+          break;
+        }
         case "attach":
           resize(Number(m.cols) || cfg.cols, Number(m.rows) || cfg.rows);
           term.write("", () => {
@@ -194,7 +253,7 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
           if (!exited) proc.kill();
           break;
         case "ping":
-          send(sock, { t: "pong" });
+          send(sock, { t: "pong", prompt: true }); // `prompt`: this host understands "prompt" messages
           break;
       }
     });

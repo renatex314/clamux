@@ -47,7 +47,7 @@ On Windows, run `npm link` instead (or call `node dist\cli.js`).
 | `c` | remove leftover status entries |
 | `q` | quit (sessions keep running) |
 
-Scriptable subcommands: `clamux new <name> [dir] [-g <group>] [-a claude|agy] [-s <session id>] [-d] [--notify|--no-notify] [-- <agent args>]`, `ls`, `attach`, `send <name> <prompt...> [--force]`, `peek`, `kill`, `resume <name> [-d]`, `resume --all`, `forget`, `clean`, `notify` (test notification), and `group ls|set|rm|move` (see below).
+Scriptable subcommands: `clamux new <name> [dir] [-g <group>] [-a claude|agy] [-s <session id>] [-d] [--notify|--no-notify] [-- <agent args>]`, `ls`, `attach`, `send <name> <prompt...> [--force]`, `peek`, `kill`, `resume <name> [-d]`, `resume --all`, `forget`, `clean`, `notify` (test notification), `config` (see Settings), and `group ls|set|rm|move` (see below).
 
 ## Groups
 
@@ -64,6 +64,10 @@ clamux group rm web                                                    # its ses
 
 Groups live in `~/.clamux/groups.json`; a session's group is kept in its saved record.
 
+## Settings
+
+`clamux config skip-permissions on` starts every Claude Code session with `--dangerously-skip-permissions` (agy sessions always run that way). It applies whenever a session starts or is resumed, so `off` takes effect on the next resume too; to use it for some sessions only, give a group the flag instead (`clamux group set <group> -- --dangerously-skip-permissions`). Claude Code asks you to confirm bypass mode the first time: attach to the session (or read its screen) and accept it once. `clamux config` shows the current settings, kept in `~/.clamux/config.json`.
+
 ## Saved sessions
 
 Every session is saved when you create it: `~/.clamux/saved/<name>.json` records its directory, the `claude` arguments, whether it notifies, and the id of the Claude conversation it holds (kept current by the hooks, so it follows `/clear`). Killing a session, rebooting, or a crash only stops the process - the record stays, and the session shows in the list as `ended` or `dead` with `resumable`. `clamux resume <name>` (or `r` in the dashboard) starts it again with `claude --resume <id>`, so the conversation continues where it left off. `clamux resume --all` restarts everything that is not running, e.g. after a reboot.
@@ -76,7 +80,7 @@ A desktop notification fires when a session goes from working to idle, or needs 
 
 ## How it works
 
-Each session is a small detached host process (`clamux host <name>`) that owns the Claude Code process through a pseudo-terminal and keeps a virtual screen of what it draws. The host listens on a unix socket (a named pipe on Windows). `attach` connects your terminal to it (replaying the current screen first), `send` and `press` write input to it, and the host also keeps a plain-text copy of the screen in `~/.clamux/run/` so the dashboard preview and `peek` are cheap. Sessions keep running when you close the dashboard or your terminal. On Windows the host uses the ConPTY that ships with node-pty (the one Windows Terminal uses) instead of the older one built into Windows, which leaves stray characters behind when Claude Code scrolls; set `CLAMUX_CONPTY_DLL=0` to go back to the built-in one.
+Each session is a small detached host process (`clamux host <name>`) that owns the Claude Code process through a pseudo-terminal and keeps a virtual screen of what it draws. The host listens on a unix socket (a named pipe on Windows). `attach` connects your terminal to it (replaying the current screen first), `send` and `press` write input to it, and the host also keeps a plain-text copy of the screen in `~/.clamux/run/` so the dashboard preview and `peek` are cheap. A prompt from `send` (or `s`, `ask`, `send_prompt`) goes in as a bracketed paste, the way a terminal pastes text, so its newlines and characters like `#`, `!` or `/` are text rather than keystrokes; Enter is pressed once the agent has drawn it, and if it never shows up nothing is submitted and `send` fails. Sessions keep running when you close the dashboard or your terminal. On Windows the host uses the ConPTY that ships with node-pty (the one Windows Terminal uses) instead of the older one built into Windows, which leaves stray characters behind when Claude Code scrolls; set `CLAMUX_CONPTY_DLL=0` to go back to the built-in one.
 
 ## MCP server
 
