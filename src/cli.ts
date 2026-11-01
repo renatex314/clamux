@@ -1,4 +1,6 @@
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { parseArgs } from "node:util";
 import { runHook } from "./hook.js";
 import { fmtAge, snapshot, type DisplayState } from "./status.js";
@@ -50,17 +52,24 @@ function must(r: Result): void {
   if (!r.ok) die(r.error);
 }
 
+/** On a terminal, paths under the home directory are shown as ~/...; piped output keeps them absolute. */
+function shown(dir: string): string {
+  const h = os.homedir();
+  return process.stdout.isTTY && (dir === h || dir.startsWith(h + path.sep)) ? "~" + dir.slice(h.length) : dir;
+}
+
 function ls(): void {
   const rows = snapshot(liveSessions());
   if (rows.length === 0) return void console.log("no sessions (clamux new <name>)");
   const color = process.stdout.isTTY;
   const w = Math.max(4, ...rows.map((r) => r.name.length));
   const gw = Math.max(5, ...rows.map((r) => (r.group ?? "-").length));
-  console.log(`${"NAME".padEnd(w)}  ${"GROUP".padEnd(gw)}  ${"AGENT".padEnd(6)}  ${"STATE".padEnd(8)}  ${"FOR".padEnd(7)}  ${"DETAIL".padEnd(50)}  DIR`);
+  const dw = Math.min(50, Math.max(6, ...rows.map((r) => r.detail.length)));
+  console.log(`${"NAME".padEnd(w)}  ${"GROUP".padEnd(gw)}  ${"AGENT".padEnd(6)}  ${"STATE".padEnd(8)}  ${"FOR".padEnd(7)}  ${"DETAIL".padEnd(dw)}  DIR`);
   for (const r of rows) {
     const s = r.state.padEnd(8);
     const state = color ? `\x1b[${COLORS[r.state]}m${s}\x1b[0m` : s;
-    console.log(`${r.name.padEnd(w)}  ${(r.group ?? "-").padEnd(gw)}  ${r.agent.padEnd(6)}  ${state}  ${fmtAge(r.ageS).padEnd(7)}  ${r.detail.padEnd(50)}  ${r.cwd}`);
+    console.log(`${r.name.padEnd(w)}  ${(r.group ?? "-").padEnd(gw)}  ${r.agent.padEnd(6)}  ${state}  ${fmtAge(r.ageS).padEnd(7)}  ${r.detail.padEnd(dw)}  ${shown(r.cwd)}`);
   }
 }
 
@@ -75,7 +84,7 @@ function group([sub, ...rest]: string[], agentArgs: string[]): void {
       for (const n of names) {
         const g = groups[n]!;
         const parts = [
-          `dir: ${g.dir ?? "(current directory)"}`,
+          `dir: ${g.dir ? shown(g.dir) : "(current directory)"}`,
           `notify: ${g.notify === false ? "off" : "on"}`,
           ...(g.agent ? [`agent: ${g.agent}`] : []),
           ...(g.args?.length ? [`args: ${g.args.join(" ")}`] : []),

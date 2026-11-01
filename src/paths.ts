@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const HOME_DIR = path.join(os.homedir(), ".clamux");
+/** Where clamux keeps everything; `CLAMUX_HOME` gives a separate set of sessions (sessions and hooks inherit it). */
+export const HOME_DIR = process.env.CLAMUX_HOME ? path.resolve(process.env.CLAMUX_HOME) : path.join(os.homedir(), ".clamux");
 export const STATUS_DIR = path.join(HOME_DIR, "status");
 /** Per-session runtime files owned by the session host: registry, config, screen, log. */
 export const RUN_DIR = path.join(HOME_DIR, "run");
