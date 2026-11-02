@@ -285,6 +285,55 @@ describe("Clamux SDK", () => {
     cx.forget("k");
   });
 
+  test("accounts run Claude Code with their own config directory, sharing the default one's settings", async () => {
+    const def = process.env.CLAUDE_CONFIG_DIR || path.join(tmp, ".claude");
+    process.env.CLAUDE_CONFIG_DIR = def;
+    fs.mkdirSync(path.join(def, "skills"), { recursive: true });
+    fs.writeFileSync(path.join(def, "settings.json"), "{}");
+    fs.writeFileSync(path.join(def, ".claude.json"), JSON.stringify({ mcpServers: { x: { command: "x" } }, oauthAccount: { emailAddress: "me@home" } }));
+
+    assert.equal(throwsCode(() => cx.addAccount("bad name!")), "INVALID");
+    assert.equal(throwsCode(() => cx.addAccount("dflt", { dir: def })), "INVALID"); // that is the default account
+    const a = cx.addAccount("work");
+    assert.equal(a.dir, path.join(tmp, ".clamux/accounts/work"));
+    assert.equal(a.email, null);
+    assert.equal(fs.realpathSync(path.join(a.dir, "settings.json")), fs.realpathSync(path.join(def, "settings.json")));
+    assert.ok(fs.statSync(path.join(a.dir, "skills")).isDirectory());
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(a.dir, ".claude.json"), "utf8")), { mcpServers: { x: { command: "x" } } });
+    assert.equal(throwsCode(() => cx.addAccount("work")), "EXISTS");
+
+    assert.equal(await code(cx.create("w0", { dir: tmp, account: "nope" })), "NOT_FOUND");
+    assert.equal(await code(cx.create("w0", { dir: tmp, account: "work", agent: "agy" })), "INVALID");
+    const s = await cx.create("w1", { dir: tmp, account: "work" });
+    assert.equal(s.account, "work");
+    await cx.waitForIdle("w1", { timeoutMs: 8000 });
+    assert.match(await cx.screen("w1"), new RegExp(`config=${a.dir.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}`));
+
+    // A group can pick the account; "" picks the default login over the group's.
+    cx.setGroup("wg", { account: "work" });
+    assert.equal((await cx.create("w2", { dir: tmp, group: "wg" })).account, "work");
+    assert.equal((await cx.create("w3", { dir: tmp, group: "wg", account: "" })).account, null);
+    await cx.waitForIdle("w3", { timeoutMs: 8000 });
+    assert.match(await cx.screen("w3"), new RegExp(`config=${def.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}`));
+
+    fs.writeFileSync(path.join(a.dir, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "me@work" } }));
+    assert.deepEqual(cx.accounts(), [{ name: "work", dir: a.dir, email: "me@work", sessions: ["w1", "w2"] }]);
+
+    // Resuming keeps the account.
+    await cx.kill("w1");
+    await cx.resume("w1");
+    await cx.waitForIdle("w1", { timeoutMs: 8000 });
+    assert.match(await cx.screen("w1"), /config=\S+accounts\/work/);
+
+    assert.equal(throwsCode(() => cx.removeAccount("work")), "BUSY");
+    for (const n of ["w1", "w2", "w3"]) { await cx.kill(n); cx.forget(n); }
+    cx.removeAccount("work");
+    assert.deepEqual(cx.accounts(), []);
+    assert.ok(fs.existsSync(a.dir)); // the login and conversations stay on disk
+    assert.equal(cx.groups().find((g) => g.name === "wg").account, undefined);
+    cx.removeGroup("wg");
+  });
+
   test("groups give new sessions their defaults, and sessions can move between groups", async () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(tmp, "grp-")));
     assert.equal(throwsCode(() => cx.setGroup("bad name!")), "INVALID");

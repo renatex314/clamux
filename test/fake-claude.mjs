@@ -21,8 +21,10 @@ const log = (type, content) =>
   fs.appendFileSync(transcript, JSON.stringify({ type, timestamp: new Date().toISOString(), message: { role: type, content } }) + "\n");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-hook("SessionStart");
+// Drawn before SessionStart reports idle, so a test that waits for idle always finds the screen.
 console.log(`ready args=${process.argv.slice(2).join(" ")}`);
+console.log(`config=${process.env.CLAUDE_CONFIG_DIR ?? "-"}`);
+hook("SessionStart");
 // FAKE_BRACKETED=1: like Claude Code, ask for bracketed paste and take a prompt as pasted text + Enter
 // (a newline inside a paste is part of the prompt; Enter outside one submits it).
 async function* bracketedPrompts() {

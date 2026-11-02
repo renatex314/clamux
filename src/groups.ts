@@ -12,6 +12,8 @@ export interface Group {
   agent?: Agent;
   /** Extra arguments for the agent CLI. */
   args?: string[];
+  /** Claude Code account new sessions run under. */
+  account?: string;
 }
 
 const GROUPS = path.join(HOME_DIR, "groups.json");

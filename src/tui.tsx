@@ -6,7 +6,7 @@ import { fmtAge, snapshot, type DisplayState, type Row } from "./status.js";
 import { KEY_TOKEN, PREFIX, attachSession, keyOf } from "./attach.js";
 import { DirPicker } from "./dirpicker.js";
 import {
-  capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, moveSession, openInput, readGroups,
+  capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, moveSession, openInput, readAccounts, readGroups,
   removeGroup, resumeSession, sendPrompt, setGroup, validName, type Agent, type Group,
 } from "./sessions.js";
 
@@ -81,6 +81,9 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
   useEffect(() => { rememberedFolds = folded; }, [folded]);
   const [mode, setMode] = useState<Mode>({ kind: "list" });
   const [newAgent, setNewAgent] = useState<Agent>("claude");
+  // The Claude Code account a new session runs under; null is the default login.
+  const [newAccount, setNewAccount] = useState<string | null>(null);
+  const [accountNames] = useTick(() => Object.keys(readAccounts()).sort());
   const [input, setInput] = useState("");
   const [msg, setMsg] = useState("");
   // Ink keeps the raw key sequences on an internal emitter; key passthrough forwards them byte for byte.
@@ -169,6 +172,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
   const newSession = (then: "dir" | "id") => {
     setMsg("");
     setNewAgent((ctxGroup && groups[ctxGroup]?.agent) || "claude");
+    setNewAccount((ctxGroup && groups[ctxGroup]?.account) || null);
     setMode({ kind: "new-name", then, group: ctxGroup });
   };
 
@@ -271,6 +275,10 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
     } else {
       if (key.tab && (mode.kind === "new-name" || mode.kind === "new-id")) {
         setNewAgent((a) => (a === "claude" ? "agy" : "claude"));
+      } else if ((key.upArrow || key.downArrow) && (mode.kind === "new-name" || mode.kind === "new-id") && accountNames.length) {
+        const choices = [null, ...accountNames];
+        const at = Math.max(0, choices.indexOf(newAccount));
+        setNewAccount(choices[(at + (key.upArrow ? -1 : 1) + choices.length) % choices.length] ?? null);
       } else if (key.escape) {
         toList("cancelled");
       }
@@ -280,7 +288,8 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
   const start = async (name: string, group: string | null, dir: string | undefined, sessionId?: string) => {
     setMsg(`starting '${name}' (${newAgent})...`);
     const notify = (group ? groups[group]?.notify : undefined) ?? true;
-    const r = await createSession(name, dir, { notify, agent: newAgent, sessionId, group: group ?? undefined });
+    const account = newAgent === "claude" ? newAccount ?? "" : ""; // "" picks the default login over the group's
+    const r = await createSession(name, dir, { notify, agent: newAgent, sessionId, group: group ?? undefined, account });
     if (r.ok) setSelName(name);
     toList(r.ok ? `started '${name}' (${newAgent}) - Enter to attach` : r.error);
     refresh();
@@ -315,6 +324,8 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
     }
   };
 
+  const accountTag = newAgent === "claude" && accountNames.length ? ` (account: ${newAccount ?? "default"})` : "";
+  const accountKeys = newAgent === "claude" && accountNames.length ? ", ↑↓: account" : "";
   const leftW = Math.min(48, Math.max(30, Math.floor(cols * 0.38)));
   const bodyH = termRows - 4; // header + footer(2) + slack so Ink never fills the whole screen
   const previewLines = Math.max(1, bodyH - 4);
@@ -374,6 +385,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
               <Text wrap="truncate-end">
                 <Text bold color="cyan">folder for '{mode.name}'</Text>
                 {mode.group ? <Text color="blue">  in {mode.group}</Text> : null}
+                {newAccount && newAgent === "claude" ? <Text color="magenta">  as {newAccount}</Text> : null}
                 <Text dimColor>  [{newAgent}, Tab: switch]</Text>
               </Text>
               <DirPicker
@@ -404,6 +416,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
               <Text wrap="truncate-end"><Text dimColor>folder   </Text>{info?.dir ? home(info.dir) : "(current directory)"}</Text>
               <Text><Text dimColor>notify   </Text>{info?.notify === false ? "off" : "on"}</Text>
               <Text><Text dimColor>agent    </Text>{info?.agent ?? "claude"}</Text>
+              {info?.account ? <Text><Text dimColor>account  </Text><Text color="magenta">{info.account}</Text></Text> : null}
               {info?.args?.length ? <Text wrap="truncate-end"><Text dimColor>args     </Text>{info.args.join(" ")}</Text> : null}
               <Text> </Text>
               <Text dimColor>sessions</Text>
@@ -420,6 +433,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
                 <Text bold>{sel.name}</Text>
                 {sel.group ? <Text color="blue">  {sel.group}</Text> : null}
                 <Text dimColor>  [{sel.agent}]</Text>
+                {sel.account ? <Text color="magenta">  {sel.account}</Text> : null}
                 <Text color={COLOR[sel.state]}>  {sel.state}</Text>
                 {sel.detail ? <Text dimColor>  {sel.detail}</Text> : null}
                 <Text dimColor>  {home(sel.cwd)}</Text>
@@ -477,9 +491,9 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
               {mode.kind === "group-name"
                 ? "new group name: "
                 : mode.kind === "new-name"
-                  ? `new ${newAgent} session${mode.group ? ` in '${mode.group}'` : ""} name${mode.then === "id" ? " (continuing a conversation)" : ""} (Tab: switch agent): `
+                  ? `new ${newAgent} session${mode.group ? ` in '${mode.group}'` : ""}${accountTag}${mode.then === "id" ? ", continuing a conversation" : ""} - name (Tab: agent${accountKeys}): `
                   : mode.kind === "new-id"
-                    ? `${newAgent === "agy" ? "agy conversation id" : "Claude session id (UUID)"} for '${mode.name}' (Tab: switch agent): `
+                    ? `${newAgent === "agy" ? "agy conversation id" : "Claude session id (UUID)"} for '${mode.name}'${accountTag} (Tab: agent${accountKeys}): `
                     : `prompt for '${mode.name}': `}
             </Text>
             <TextInput value={input} onChange={setInput} onSubmit={submit} />

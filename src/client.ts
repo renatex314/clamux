@@ -3,9 +3,9 @@ import { readStatus, snapshot, type DisplayState, type Row } from "./status.js";
 import { attachSession } from "./attach.js";
 import { lastAnswer } from "./transcript.js";
 import {
-  capturePane, cleanStale, createSession, fetchScreen, forgetSession, groupMembers, killSession, liveSessions,
-  moveSession, pressKeys, readGroups, removeGroup, resumeSession, sendPrompt, setGroup, type Agent, type Group,
-  type Result,
+  accountEmail, accountMembers, addAccount, capturePane, cleanStale, createSession, fetchScreen, forgetSession,
+  groupMembers, killSession, liveSessions, moveSession, pressKeys, readAccounts, readGroups, removeAccount, removeGroup,
+  resumeSession, sendPrompt, setGroup, type Agent, type Group, type Result,
 } from "./sessions.js";
 
 /** A snapshot of one session. */
@@ -25,6 +25,18 @@ export interface GroupSettings {
   notify?: boolean | null;
   agent?: Agent | "gemini" | null;
   args?: string[] | null;
+  account?: string | null;
+}
+
+/** A Claude Code account: a config directory with its own login and conversations. */
+export interface AccountInfo {
+  name: string;
+  /** Its Claude Code config directory (`CLAUDE_CONFIG_DIR`). */
+  dir: string;
+  /** Who it is logged in as, or null if it has not logged in yet. */
+  email: string | null;
+  /** Saved sessions that run under it. */
+  sessions: string[];
 }
 
 export interface CreateOptions {
@@ -36,8 +48,10 @@ export interface CreateOptions {
   agent?: Agent | "gemini";
   /** Desktop notification when the session goes idle or needs you. Default: the group's, else false (the CLI/TUI default to true). */
   notify?: boolean;
-  /** Put the session in this group; the group's defaults fill in `dir`, `notify`, `agent` and `args` when they are left out. */
+  /** Put the session in this group; the group's defaults fill in `dir`, `notify`, `agent`, `args` and `account` when they are left out. */
   group?: string;
+  /** Run Claude Code under this account (see `addAccount`). Default: the group's, else your default Claude login. */
+  account?: string;
   /** Extra arguments passed to the agent CLI (`claude` or `agy`), e.g. ["--model", "opus"]. */
   claudeArgs?: string[];
   /** Alias for `claudeArgs`. */
@@ -116,6 +130,7 @@ export class Clamux {
       agent: opts.agent,
       sessionId: opts.sessionId,
       group: opts.group,
+      account: opts.account,
       claudeArgs: opts.args ?? opts.claudeArgs,
     }));
     return this.require(name);
@@ -271,6 +286,30 @@ export class Clamux {
   /** Deletes a group; its sessions keep running, without a group. */
   removeGroup(name: string): void {
     unwrap(removeGroup(name));
+  }
+
+  /** Claude Code accounts other than the default one. */
+  accounts(): AccountInfo[] {
+    const users = accountMembers();
+    return Object.entries(readAccounts())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, a]) => ({ name, dir: a.dir, email: accountEmail(a.dir), sessions: (users.get(name) ?? []).sort() }));
+  }
+
+  /**
+   * Adds a Claude Code account: its own config directory (`dir`, or a new one under ~/.clamux/accounts). A new
+   * directory shares the default account's settings, skills, agents, commands, plugins and MCP servers unless
+   * `share` is false. It still has to log in once: run `clamux account login <name>` in a terminal.
+   */
+  addAccount(name: string, opts: { dir?: string; share?: boolean } = {}): AccountInfo {
+    const r = addAccount(name, opts);
+    if (!r.ok) throw new ClamuxError(r.code, r.error);
+    return this.accounts().find((a) => a.name === name) as AccountInfo;
+  }
+
+  /** Unregisters an account (its directory stays on disk). Throws BUSY while sessions use it. */
+  removeAccount(name: string): void {
+    unwrap(removeAccount(name));
   }
 
   /** Puts a session in a group, or takes it out of its group with `null`. */

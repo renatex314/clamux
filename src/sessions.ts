@@ -6,6 +6,9 @@ import path from "node:path";
 import type { ErrorCode } from "./errors.js";
 import { childEnv } from "./env.js";
 import type { HostConfig } from "./host.js";
+import {
+  defaultClaudeDir, newAccountDir, readAccounts, shareDefaults, writeAccounts, type Account,
+} from "./accounts.js";
 import { readConfig } from "./config.js";
 import { readGroups, writeGroups, type Group } from "./groups.js";
 import { connect, readMessages, send, type Msg } from "./ipc.js";
@@ -20,6 +23,7 @@ export { liveSessions } from "./registry.js";
 export { parseAgent, type Agent } from "./saved.js";
 export { readGroups, type Group } from "./groups.js";
 export { readConfig, writeConfig, type Config } from "./config.js";
+export { accountEmail, defaultClaudeDir, readAccounts, type Account } from "./accounts.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -115,12 +119,15 @@ export function removeAgyHooks(): boolean {
  * Starts a detached host process for the session and waits until it is serving.
  * `dir` undefined means the current directory, or, with `sessionId`, the directory that conversation ran in.
  * `sessionId` continues an existing conversation (`claude --resume <uuid>` / `agy --conversation <id>`).
- * In a `group`, the group's defaults fill in whatever `dir`, `notify`, `agent` and `claudeArgs` leave out.
+ * In a `group`, the group's defaults fill in whatever `dir`, `notify`, `agent`, `claudeArgs` and `account` leave out.
+ * `account` runs Claude Code under another account (see `addAccount`); `""` means the default one.
  */
 export async function createSession(
   name: string,
   dir: string | undefined,
-  opts: { notify?: boolean; agent?: Agent | "gemini"; claudeArgs?: string[]; sessionId?: string; group?: string },
+  opts: {
+    notify?: boolean; agent?: Agent | "gemini"; claudeArgs?: string[]; sessionId?: string; group?: string; account?: string;
+  },
 ): Promise<Result> {
   if (!validName(name)) return fail("INVALID", "name may only contain letters, digits, - and _ (max 32 characters)");
   if (liveSessions().has(name)) return fail("EXISTS", `session '${name}' already exists`);
@@ -135,6 +142,10 @@ export async function createSession(
   } catch (e) {
     return fail("INVALID", e instanceof Error ? e.message : String(e));
   }
+  const account = (opts.account ?? g.account) || null;
+  const accounts = readAccounts();
+  if (account && !accounts[account]) return fail("NOT_FOUND", `no account '${account}' (clamux account ls)`);
+  if (account && agent !== "claude") return fail("INVALID", "accounts are for Claude Code sessions; agy has its own login");
 
   const sessionId = opts.sessionId?.trim() || null;
   let transcriptPath: string | null = null;
@@ -142,8 +153,9 @@ export async function createSession(
   if (sessionId) {
     if (agent === "claude") {
       if (!isUuid(sessionId)) return fail("INVALID", `not a Claude session id (a UUID): ${sessionId}`);
-      const found = findClaudeSession(sessionId);
-      if (!found) return fail("NOT_FOUND", `no Claude conversation '${sessionId}' under ~/.claude/projects`);
+      const configDir = account ? (accounts[account] as Account).dir : defaultClaudeDir();
+      const found = findClaudeSession(sessionId, configDir);
+      if (!found) return fail("NOT_FOUND", `no Claude conversation '${sessionId}' under ${path.join(configDir, "projects")}`);
       transcriptPath = found.transcriptPath;
       sessionCwd = found.cwd;
     } else if (!/^[\w-]+$/.test(sessionId)) {
@@ -165,8 +177,8 @@ export async function createSession(
     ? [...withoutConversationArgs(claudeArgs), agent === "agy" ? "--conversation" : "--resume", sessionId]
     : claudeArgs;
   // Saved before the host starts, so the first hook (which records the conversation id) finds it.
-  writeSaved(name, { cwd, agent, claudeArgs, notify, sessionId, transcriptPath, group, savedAt: Date.now() / 1000 });
-  const r = await startHost(name, cwd, agent, startArgs, notify);
+  writeSaved(name, { cwd, agent, claudeArgs, notify, sessionId, transcriptPath, group, account, savedAt: Date.now() / 1000 });
+  const r = await startHost(name, cwd, agent, startArgs, notify, account);
   if (!r.ok) removeSaved(name);
   return r;
 }
@@ -204,7 +216,7 @@ export async function resumeSession(name: string): Promise<ResumeResult> {
   const resumable = sv.sessionId !== null && sv.transcriptPath !== null && fs.existsSync(sv.transcriptPath);
   const resumeFlag = agent === "agy" ? "--conversation" : "--resume";
   const args = resumable ? [...withoutConversationArgs(sv.claudeArgs), resumeFlag, sv.sessionId as string] : sv.claudeArgs;
-  const r = await startHost(name, sv.cwd, agent, args, sv.notify);
+  const r = await startHost(name, sv.cwd, agent, args, sv.notify, sv.account ?? null);
   return r.ok ? { ok: true, resumed: resumable } : (r as Extract<Result, { ok: false }>);
 }
 
@@ -235,7 +247,9 @@ export function groupMembers(): Map<string, string[]> {
  */
 export function setGroup(
   name: string,
-  fields: { dir?: string | null; notify?: boolean | null; agent?: Agent | "gemini" | null; args?: string[] | null },
+  fields: {
+    dir?: string | null; notify?: boolean | null; agent?: Agent | "gemini" | null; args?: string[] | null; account?: string | null;
+  },
 ): Result {
   if (!validName(name)) return fail("INVALID", "group name may only contain letters, digits, - and _ (max 32 characters)");
   const groups = readGroups();
@@ -266,6 +280,11 @@ export function setGroup(
     if (fields.args === null || fields.args.length === 0) delete g.args;
     else g.args = fields.args;
   }
+  if (fields.account !== undefined) {
+    if (!fields.account) delete g.account;
+    else if (!readAccounts()[fields.account]) return fail("NOT_FOUND", `no account '${fields.account}' (clamux account ls)`);
+    else g.account = fields.account;
+  }
   writeGroups({ ...groups, [name]: g });
   return { ok: true };
 }
@@ -288,6 +307,52 @@ export function moveSession(name: string, group: string | null): Result {
   return { ok: true };
 }
 
+/** Sessions (saved records) that run under each account. */
+export function accountMembers(): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const n of savedNames()) {
+    const a = readSaved(n)?.account;
+    if (a) out.set(a, [...(out.get(a) ?? []), n]);
+  }
+  return out;
+}
+
+/**
+ * Registers a Claude Code account: a config directory of its own (`dir`, or a new one under ~/.clamux/accounts),
+ * where it keeps its login, state and conversations. Unless `share` is false, a new directory gets links to the
+ * default account's settings, CLAUDE.md, skills, agents, commands and plugins, and a copy of its MCP servers.
+ * Logging in happens the first time Claude Code runs in it (`clamux account login`).
+ */
+export function addAccount(name: string, opts: { dir?: string; share?: boolean } = {}): { ok: true; dir: string; shared: string[] } | Extract<Result, { ok: false }> {
+  const no = (code: ErrorCode, msg: string) => fail(code, msg) as Extract<Result, { ok: false }>;
+  if (!validName(name)) return no("INVALID", "account name may only contain letters, digits, - and _ (max 32 characters)");
+  const accounts = readAccounts();
+  if (accounts[name]) return no("EXISTS", `account '${name}' already exists`);
+  const dir = opts.dir ? expandDir(opts.dir) : newAccountDir(name);
+  if (path.resolve(dir) === path.resolve(defaultClaudeDir())) return no("INVALID", `${dir} is the default account; sessions use it without one`);
+  const existed = fs.existsSync(dir);
+  if (existed && !fs.statSync(dir).isDirectory()) return no("INVALID", `not a directory: ${dir}`);
+  fs.mkdirSync(dir, { recursive: true });
+  // An existing directory is an account already set up: leave its contents alone.
+  const shared = opts.share === false || existed ? [] : shareDefaults(dir);
+  writeAccounts({ ...accounts, [name]: { dir } });
+  return { ok: true, dir, shared };
+}
+
+/** Unregisters an account. Its directory (login, conversations) stays on disk. Refused while sessions use it. */
+export function removeAccount(name: string): Result {
+  const accounts = readAccounts();
+  if (!accounts[name]) return fail("NOT_FOUND", `no account '${name}'`);
+  const users = accountMembers().get(name) ?? [];
+  if (users.length) return fail("BUSY", `sessions use account '${name}': ${users.join(", ")}; forget them first`);
+  const groups = readGroups();
+  for (const g of Object.values(groups)) if (g.account === name) delete g.account;
+  writeGroups(groups);
+  delete accounts[name];
+  writeAccounts(accounts);
+  return { ok: true };
+}
+
 /** Removes status entries of sessions that are neither running nor saved. Returns their names. */
 export function cleanStale(): string[] {
   const live = liveSessions();
@@ -297,7 +362,11 @@ export function cleanStale(): string[] {
   return stale;
 }
 
-async function startHost(name: string, cwd: string, agent: Agent, claudeArgs: string[], notify: boolean): Promise<Result> {
+async function startHost(
+  name: string, cwd: string, agent: Agent, claudeArgs: string[], notify: boolean, account: string | null,
+): Promise<Result> {
+  const accountDir = account ? readAccounts()[account]?.dir : undefined;
+  if (account && !accountDir) return fail("NOT_FOUND", `account '${account}' no longer exists (clamux account ls)`);
   if (agent === "agy") {
     try {
       writeAgyHooks();
@@ -319,7 +388,8 @@ async function startHost(name: string, cwd: string, agent: Agent, claudeArgs: st
     stdio: "ignore",
     windowsHide: true,
     cwd,
-    env: childEnv({ CLAMUX_NAME: name, CLAMUX_NOTIFY: notify ? "1" : "0" }),
+    // Claude Code keeps an account's login, state and conversations in its config directory.
+    env: childEnv({ CLAMUX_NAME: name, CLAMUX_NOTIFY: notify ? "1" : "0", ...(accountDir ? { CLAUDE_CONFIG_DIR: accountDir } : {}) }),
   });
   let hostExited = false;
   host.on("exit", () => (hostExited = true));

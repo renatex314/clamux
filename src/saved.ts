@@ -20,6 +20,8 @@ export interface Saved {
   transcriptPath: string | null;
   /** The group the session belongs to, if any. */
   group?: string | null;
+  /** The Claude Code account (see accounts.ts) it runs under; none means the default one. */
+  account?: string | null;
   savedAt: number;
 }
 

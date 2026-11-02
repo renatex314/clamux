@@ -11,7 +11,7 @@ A terminal dashboard, CLI, TypeScript SDK and MCP server for running many Claude
 ![platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-555)
 [![license](https://img.shields.io/npm/l/@renatex314/clamux?color=blue)](LICENSE)
 
-[Quick start](#quick-start) · [Dashboard](#dashboard) · [Groups](#groups) · [CLI](#cli) · [SDK](#sdk) · [MCP server](#mcp-server)
+[Quick start](#quick-start) · [Dashboard](#dashboard) · [Groups](#groups) · [Accounts](#accounts) · [CLI](#cli) · [SDK](#sdk) · [MCP server](#mcp-server)
 
 <img src="docs/images/dashboard.png" alt="The clamux dashboard: sessions grouped into backend and frontend, one working, one waiting for input, with a live preview of the selected session" width="900">
 
@@ -22,7 +22,8 @@ A terminal dashboard, CLI, TypeScript SDK and MCP server for running many Claude
 - **Live status for every session**: `working` (and on which tool), `idle`, `waiting` for you, `ended`. It comes from Claude Code's lifecycle hooks, not from scraping the screen.
 - **A dashboard with a live preview** of the selected session. Attach to any session with `Enter`, detach with `Ctrl-b d`, or send keys and prompts without leaving the list.
 - **Sessions outlive your terminal.** Each one runs in its own background process. Close the dashboard, reboot, or crash, and `resume` continues the same conversation.
-- **Groups** with defaults for new sessions: the folder they start in, notifications, agent, and arguments.
+- **Groups** with defaults for new sessions: the folder they start in, notifications, agent, arguments, and account.
+- **Several Claude accounts** side by side, e.g. personal and work subscriptions, each session under the one you pick.
 - **Desktop notifications** when a session finishes or needs your permission.
 - **A typed SDK**: `ask()` a session something and get Claude's reply as plain text, or `watch()` every state change.
 - **An MCP server**, so Claude Code itself can start sessions and delegate work to them.
@@ -57,7 +58,7 @@ Requires Node 20+ and the `claude` CLI (or `agy`) on your PATH. For the SDK, add
 |---|---|
 | `↑` `↓` / `j` `k` | select a session or a group |
 | `Enter` | attach to it; press `Ctrl-b` then `d` to detach and come back to the dashboard. On a group: fold or unfold it |
-| `n` | new session: asks for a name, then opens a folder picker (`↑` `↓` move, `Enter`/`→` open a folder, `Enter` on "✓ use this folder" picks it, `←`/`Backspace` go up, type to filter, or type a path starting with `/` or `~`); `Tab` switches between `claude` and `agy` |
+| `n` | new session: asks for a name, then opens a folder picker (`↑` `↓` move, `Enter`/`→` open a folder, `Enter` on "✓ use this folder" picks it, `←`/`Backspace` go up, type to filter, or type a path starting with `/` or `~`); while typing the name, `Tab` switches between `claude` and `agy` and `↑` `↓` pick the [account](#accounts) |
 | `u` | new session that continues an existing conversation: asks for a name, then a Claude session UUID (or an agy conversation id); it starts in the directory that conversation ran in |
 | `i` | send keys: every key (`Esc`, `Ctrl-c`, arrows...) goes to the selected session while the dashboard stays on screen; `Ctrl-b` then `d` stops, `Ctrl-b` `Ctrl-b` sends a literal `Ctrl-b` |
 | `s` | type a prompt into the selected session (asks first if it is busy) |
@@ -81,6 +82,7 @@ Groups collect sessions under a heading and give the sessions created in them de
 
 ```sh
 clamux group set web --dir ~/projects/web --no-notify -- --model opus   # create, or change only the options given
+clamux group set web -A work                                           # its sessions run under the `work` account
 clamux group set web -a agy                                            # --no-dir / --no-args remove a default
 clamux new api -g web -d                                               # starts in ~/projects/web, no notifications
 clamux group move api other                                            # or `clamux group move api` to ungroup it
@@ -90,13 +92,26 @@ clamux group rm web                                                    # its ses
 
 Options you pass explicitly win over the group's, and changing a group only affects sessions created afterwards. Groups live in `~/.clamux/groups.json`; a session's group is kept in its saved record.
 
+## Accounts
+
+Run sessions under different Claude accounts at the same time, for example a personal and a work subscription. An account is a Claude Code config directory of its own (`CLAUDE_CONFIG_DIR`), so it has its own login, usage limits and conversation history. Sessions without one use your normal login.
+
+```sh
+clamux account add work            # creates ~/.clamux/accounts/work
+clamux account login work          # opens Claude Code in it: log in, then /exit
+clamux new api ~/code/api -A work  # or pick it with ↑↓ in the dashboard, or set it on a group
+clamux account ls                  # every account and who it is logged in as
+```
+
+A new account shares your default one's `settings.json`, `CLAUDE.md`, skills, agents, commands and plugins (as links, so changes show up in both) and starts with a copy of its user-scope MCP servers; pass `--no-share` for a clean one. To use a config directory you already have, pass it with `--dir`. A session keeps its account when it is resumed, and `-s <session id>` looks the conversation up in that account. `clamux account rm` only unregisters an account: its directory, with its login and conversations, stays on disk. Accounts apply to Claude Code; agy has its own login.
+
 ## CLI
 
 <p align="center"><img src="docs/images/cli.png" alt="clamux ls and clamux group ls output" width="760"></p>
 
 | Command | |
 |---|---|
-| `clamux new <name> [dir] [-g <group>] [-a claude\|agy] [-s <session id>] [-d] [--notify\|--no-notify] [-- <agent args>]` | start a session (and attach, unless `-d`) |
+| `clamux new <name> [dir] [-g <group>] [-A <account>] [-a claude\|agy] [-s <session id>] [-d] [--notify\|--no-notify] [-- <agent args>]` | start a session (and attach, unless `-d`) |
 | `clamux ls` | every session with its group, agent, state and directory |
 | `clamux attach <name>` | connect your terminal to it; `Ctrl-b d` detaches |
 | `clamux send <name> <prompt...> [--force]` | type a prompt into it (refuses if it is busy, unless `--force`) |
@@ -105,6 +120,7 @@ Options you pass explicitly win over the group's, and changing a group only affe
 | `clamux resume <name> [-d]` / `resume --all` | restart a saved session (or all of them), continuing its conversation |
 | `clamux forget <name>` | delete a stopped session and its saved record |
 | `clamux group ls\|set\|rm\|move` | manage [groups](#groups) |
+| `clamux account ls\|add\|login\|rm` | manage Claude [accounts](#accounts) |
 | `clamux config [skip-permissions on\|off]` | [settings](#settings) for every session |
 | `clamux clean` | remove status files of sessions that are gone |
 | `clamux notify` | show a test desktop notification (and why it failed, if it did) |
@@ -135,9 +151,10 @@ for await (const change of cx.watch()) {                // every state change, u
 
 | Method | |
 |---|---|
-| `list()` / `get(name)` | session snapshots: `name`, `state`, `detail` (current tool), `ageS`, `cwd`, `group`, `live`, `sessionId`, `transcriptPath`, `resumable` |
-| `create(name, { dir, agent, sessionId, group, notify, claudeArgs })` | start a session (async); `sessionId` continues an existing conversation; `group` fills in what is left out from the group's defaults |
-| `groups()` / `setGroup(name, { dir, notify, agent, args })` / `removeGroup(name)` / `moveToGroup(name, group \| null)` | manage groups (`null` clears a default) |
+| `list()` / `get(name)` | session snapshots: `name`, `state`, `detail` (current tool), `ageS`, `cwd`, `group`, `account`, `live`, `sessionId`, `transcriptPath`, `resumable` |
+| `create(name, { dir, agent, sessionId, group, account, notify, claudeArgs })` | start a session (async); `sessionId` continues an existing conversation; `group` fills in what is left out from the group's defaults; `account` runs it under another Claude login |
+| `groups()` / `setGroup(name, { dir, notify, agent, args, account })` / `removeGroup(name)` / `moveToGroup(name, group \| null)` | manage groups (`null` clears a default) |
+| `accounts()` / `addAccount(name, { dir, share })` / `removeAccount(name)` | manage Claude accounts; each new one logs in once with `clamux account login` |
 | `send(name, prompt, { force })` | type a prompt; throws `BUSY` if the session is working/waiting |
 | `ask(name, prompt, opts)` | `send` then wait until Claude finishes that turn (working -> idle); returns `{ session, answer, screen, transcriptPath }`, where `answer` is Claude's final reply as plain text |
 | `lastAnswer(name)` | Claude's most recent reply in the session (read from its transcript), or `null` |
@@ -190,7 +207,8 @@ Other clients: `{ "mcpServers": { "clamux": { "command": "npx", "args": ["-y", "
 |---|---|
 | `list_sessions` | all sessions with state (`working`, `idle`, `waiting`, ...), group, and whether they are `resumable` |
 | `list_groups` | groups with their defaults and sessions |
-| `create_session` | start a session in a directory (`name`, `dir`, `agent`, `session_id`, `group`, `claude_args`, `notify`) |
+| `list_accounts` | Claude accounts sessions can run under, and who each is logged in as |
+| `create_session` | start a session in a directory (`name`, `dir`, `agent`, `session_id`, `group`, `account`, `claude_args`, `notify`) |
 | `ask` | send a prompt, wait for Claude to finish, return its final reply as text |
 | `send_prompt` / `wait_for_session` / `get_answer` | the same in separate steps: send and return, wait until it stops working, read the latest reply |
 | `read_screen` / `press_keys` | see the terminal and send keystrokes, e.g. to answer a permission prompt |
@@ -260,7 +278,7 @@ On Windows, run `npm link` instead (or call `node dist\cli.js`). `node-pty` prov
 - `src/status.ts`: reads status files and derives the displayed state
 - `src/host.ts`: the per-session host: pty, virtual screen, socket server
 - `src/sessions.ts`, `src/registry.ts`, `src/attach.ts`: create / resume / send / kill / attach, and discovering live sessions
-- `src/saved.ts`, `src/groups.ts`, `src/config.ts`: the per-session records that make resuming possible, groups, and settings
+- `src/saved.ts`, `src/groups.ts`, `src/accounts.ts`, `src/config.ts`: the per-session records that make resuming possible, groups, accounts, and settings
 - `src/ipc.ts`, `src/keys.ts`, `src/notify.ts`, `src/env.ts`: protocol framing, key names, desktop notifications, environment hygiene
 - `src/tui.tsx`, `src/dirpicker.tsx`: the Ink dashboard (loaded lazily so hooks start fast) and its folder picker
 - `src/cli.ts`: entry point and subcommands

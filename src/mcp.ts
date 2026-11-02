@@ -24,7 +24,7 @@ async function run(body: () => Promise<ToolResult> | ToolResult): Promise<ToolRe
 
 const brief = (s: Session) => ({
   name: s.name, agent: s.agent, state: s.state, detail: s.detail || undefined, for_seconds: Math.round(s.ageS),
-  dir: s.cwd, group: s.group ?? undefined, live: s.live, resumable: s.resumable,
+  dir: s.cwd, group: s.group ?? undefined, account: s.account ?? undefined, live: s.live, resumable: s.resumable,
 });
 
 const name = z.string().describe("Session name, as shown by list_sessions");
@@ -64,6 +64,12 @@ export async function runMcp(): Promise<void> {
     annotations: { readOnlyHint: true },
   }, () => run(() => json(cx.groups())));
 
+  server.registerTool("list_accounts", {
+    title: "List accounts",
+    description: "List the Claude Code accounts sessions can run under (besides the default login): name, who it is logged in as, and its sessions. Pass one as account to create_session, e.g. to spread work across subscriptions.",
+    annotations: { readOnlyHint: true },
+  }, () => run(() => json(cx.accounts())));
+
   server.registerTool("create_session", {
     title: "Create session",
     description: "Start a new Claude Code or Antigravity CLI (agy) session in a directory. It runs in the background until killed. Returns once the agent has started; if it is stuck on a startup/trust prompt, the result says so and includes the screen.",
@@ -74,10 +80,11 @@ export async function runMcp(): Promise<void> {
       session_id: z.string().optional().describe("Continue an existing conversation: a Claude Code session UUID, or an agy conversation id. The directory defaults to the one that conversation ran in"),
       claude_args: z.array(z.string()).optional().describe('Extra arguments for the agent CLI, e.g. ["--model", "opus"]'),
       notify: z.boolean().optional().describe("Desktop notification when the session finishes or needs input (default: the group's, else false)"),
-      group: z.string().optional().describe("Put the session in this group (see list_groups); the group's defaults fill in dir, agent, claude_args and notify when they are left out"),
+      group: z.string().optional().describe("Put the session in this group (see list_groups); the group's defaults fill in dir, agent, claude_args, notify and account when they are left out"),
+      account: z.string().optional().describe("Run Claude Code under this account (see list_accounts) instead of the default login"),
     },
-  }, ({ name: n, dir, agent, session_id, claude_args, notify, group }) => run(async () => {
-    const created = await cx.create(n, { dir, agent, sessionId: session_id, claudeArgs: claude_args, notify, group });
+  }, ({ name: n, dir, agent, session_id, claude_args, notify, group, account }) => run(async () => {
+    const created = await cx.create(n, { dir, agent, sessionId: session_id, claudeArgs: claude_args, notify, group, account });
     const s = await cx.waitFor(n, (x) => x.state !== "starting", { timeoutMs: 20_000 }).catch(() => cx.get(n) ?? created);
     return s.state === "starting" ? stalled(s) : json(brief(s));
   }));

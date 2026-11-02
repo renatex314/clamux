@@ -8,9 +8,12 @@ export const isUuid = (s: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
  * Finds a Claude Code conversation by id: `<config dir>/projects/<project>/<id>.jsonl`, and the directory it ran in
  * (`claude --resume` only finds a conversation from its own project directory).
  */
-export function findClaudeSession(id: string): { transcriptPath: string; cwd: string | null } | null {
+export function findClaudeSession(
+  id: string,
+  configDir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"),
+): { transcriptPath: string; cwd: string | null } | null {
   if (!isUuid(id)) return null;
-  const projects = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "projects");
+  const projects = path.join(configDir, "projects");
   let dirs: string[];
   try {
     dirs = fs.readdirSync(projects);

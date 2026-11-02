@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -5,16 +6,18 @@ import { parseArgs } from "node:util";
 import { runHook } from "./hook.js";
 import { fmtAge, snapshot, type DisplayState } from "./status.js";
 import { attachSession } from "./attach.js";
+import { childEnv } from "./env.js";
 import { configFile, SETTINGS } from "./paths.js";
 import {
-  capturePane, cleanStale, createSession, forgetSession, groupMembers, killSession, liveSessions, moveSession,
-  readConfig, readGroups, removeGroup, resumeSession, sendPrompt, setGroup, writeConfig, type Result,
+  accountEmail, accountMembers, addAccount, capturePane, cleanStale, createSession, defaultClaudeDir, forgetSession,
+  groupMembers, killSession, liveSessions, moveSession, readAccounts, readConfig, readGroups, removeAccount, removeGroup,
+  resumeSession, sendPrompt, setGroup, writeConfig, type Result,
 } from "./sessions.js";
 
 const HELP = `clamux - manage multiple Claude Code and Antigravity CLI (agy) sessions, with live working/idle status.
 
   clamux                          open the interactive dashboard (TUI)
-  clamux new <name> [dir] [-g <group>] [-a claude|agy] [-s <session id>] [-d] [--notify|--no-notify] [-- <agent args>]
+  clamux new <name> [dir] [-g <group>] [-A <account>] [-a claude|agy] [-s <session id>] [-d] [--notify|--no-notify] [-- <agent args>]
   clamux ls
   clamux attach <name>            (detach with Ctrl-b d)
   clamux send <name> <prompt...> [--force]
@@ -25,10 +28,15 @@ const HELP = `clamux - manage multiple Claude Code and Antigravity CLI (agy) ses
   clamux forget <name>            delete a stopped session and its saved record
   clamux clean                    remove status files of sessions that are gone
   clamux group ls                 list groups and their defaults
-  clamux group set <group> [--dir <dir>|--no-dir] [-a claude|agy] [--notify|--no-notify] [-- <agent args>]
+  clamux group set <group> [--dir <dir>|--no-dir] [-A <account>|--no-account] [-a claude|agy] [--notify|--no-notify] [-- <agent args>]
                                   create a group, or change its defaults for new sessions
   clamux group rm <group>         delete a group (its sessions stay, without a group)
   clamux group move <name> [group]  put a session in a group (no group: take it out)
+  clamux account ls               list Claude Code accounts and who is logged in to each
+  clamux account add <name> [--dir <claude config dir>] [--no-share]
+                                  add an account (its own Claude Code config directory), then log in to it
+  clamux account login <name>     run Claude Code in that account to log in (or switch the login)
+  clamux account rm <name>        unregister an account (its directory stays on disk)
   clamux mcp                      run as an MCP server on stdio (for Claude Code, agy, and other MCP clients)
   clamux config                   show the settings that apply to every session
   clamux config skip-permissions on|off
@@ -65,11 +73,14 @@ function ls(): void {
   const w = Math.max(4, ...rows.map((r) => r.name.length));
   const gw = Math.max(5, ...rows.map((r) => (r.group ?? "-").length));
   const dw = Math.min(50, Math.max(6, ...rows.map((r) => r.detail.length)));
-  console.log(`${"NAME".padEnd(w)}  ${"GROUP".padEnd(gw)}  ${"AGENT".padEnd(6)}  ${"STATE".padEnd(8)}  ${"FOR".padEnd(7)}  ${"DETAIL".padEnd(dw)}  DIR`);
+  // The ACCOUNT column only shows up once there is more than one account.
+  const aw = Object.keys(readAccounts()).length ? Math.max(7, ...rows.map((r) => (r.account ?? "-").length)) : 0;
+  const acct = (v: string) => (aw ? `${v.padEnd(aw)}  ` : "");
+  console.log(`${"NAME".padEnd(w)}  ${"GROUP".padEnd(gw)}  ${acct("ACCOUNT")}${"AGENT".padEnd(6)}  ${"STATE".padEnd(8)}  ${"FOR".padEnd(7)}  ${"DETAIL".padEnd(dw)}  DIR`);
   for (const r of rows) {
     const s = r.state.padEnd(8);
     const state = color ? `\x1b[${COLORS[r.state]}m${s}\x1b[0m` : s;
-    console.log(`${r.name.padEnd(w)}  ${(r.group ?? "-").padEnd(gw)}  ${r.agent.padEnd(6)}  ${state}  ${fmtAge(r.ageS).padEnd(7)}  ${r.detail.padEnd(dw)}  ${shown(r.cwd)}`);
+    console.log(`${r.name.padEnd(w)}  ${(r.group ?? "-").padEnd(gw)}  ${acct(r.account ?? "-")}${r.agent.padEnd(6)}  ${state}  ${fmtAge(r.ageS).padEnd(7)}  ${r.detail.padEnd(dw)}  ${shown(r.cwd)}`);
   }
 }
 
@@ -87,6 +98,7 @@ function group([sub, ...rest]: string[], agentArgs: string[]): void {
           `dir: ${g.dir ? shown(g.dir) : "(current directory)"}`,
           `notify: ${g.notify === false ? "off" : "on"}`,
           ...(g.agent ? [`agent: ${g.agent}`] : []),
+          ...(g.account ? [`account: ${g.account}`] : []),
           ...(g.args?.length ? [`args: ${g.args.join(" ")}`] : []),
         ];
         const ss = members.get(n) ?? [];
@@ -105,10 +117,12 @@ function group([sub, ...rest]: string[], agentArgs: string[]): void {
           notify: { type: "boolean" },
           "no-notify": { type: "boolean" },
           "no-args": { type: "boolean" },
+          account: { type: "string", short: "A" },
+          "no-account": { type: "boolean" },
         },
       });
       const [name] = positionals;
-      if (!name) die("usage: clamux group set <group> [--dir <dir>|--no-dir] [-a claude|agy] [--notify|--no-notify] [--no-args | -- <agent args>]");
+      if (!name) die("usage: clamux group set <group> [--dir <dir>|--no-dir] [-A <account>|--no-account] [-a claude|agy] [--notify|--no-notify] [--no-args | -- <agent args>]");
       const isNew = !readGroups()[name];
       must(setGroup(name, {
         dir: values["no-dir"] ? null : values.dir,
@@ -116,6 +130,7 @@ function group([sub, ...rest]: string[], agentArgs: string[]): void {
         notify: values["no-notify"] ? false : values.notify || isNew ? true : undefined,
         agent: values.agent as "claude" | "agy" | "gemini" | undefined,
         args: values["no-args"] ? null : agentArgs.length ? agentArgs : undefined,
+        account: values["no-account"] ? null : values.account,
       }));
       return void console.log(`${isNew ? "created" : "updated"} group '${name}'`);
     }
@@ -131,6 +146,59 @@ function group([sub, ...rest]: string[], agentArgs: string[]): void {
     }
     default:
       die(`unknown group command '${sub}' (ls, set, rm, move)`);
+  }
+}
+
+function account([sub, ...rest]: string[]): void {
+  switch (sub) {
+    case undefined:
+    case "ls": {
+      const accounts = readAccounts();
+      const users = accountMembers();
+      const who = (dir: string | null) => accountEmail(dir) ?? "not logged in";
+      console.log(`(default)  ${who(null)}  ${shown(defaultClaudeDir())}`);
+      for (const n of Object.keys(accounts).sort()) {
+        const a = accounts[n]!;
+        const ss = users.get(n) ?? [];
+        console.log(`${n}  ${who(a.dir)}  ${shown(a.dir)}${ss.length ? `\n  sessions: ${ss.sort().join(", ")}` : ""}`);
+      }
+      if (!Object.keys(accounts).length) console.log("\nno other accounts (clamux account add <name>)");
+      return;
+    }
+    case "add": {
+      const { values, positionals } = parseArgs({
+        args: rest, allowPositionals: true, options: { dir: { type: "string" }, "no-share": { type: "boolean" } },
+      });
+      const [name] = positionals;
+      if (!name) die("usage: clamux account add <name> [--dir <claude config dir>] [--no-share]");
+      const r = addAccount(name, { dir: values.dir, share: !values["no-share"] });
+      if (!r.ok) die(r.error);
+      console.log(`added account '${name}' (${shown(r.dir)})`);
+      if (r.shared.length) console.log(`shared with the default account: ${r.shared.join(", ")}`);
+      if (accountEmail(r.dir)) return void console.log(`logged in as ${accountEmail(r.dir)}`);
+      console.log(`next: clamux account login ${name}   (then: clamux new <session> -A ${name})`);
+      return;
+    }
+    case "login": {
+      const name = rest[0] ?? die("usage: clamux account login <name>");
+      const a = readAccounts()[name] ?? die(`no account '${name}' (clamux account ls)`);
+      if (!process.stdin.isTTY) die("logging in needs an interactive terminal");
+      console.log(`starting Claude Code in account '${name}': log in (or run /login), then exit with /exit or Ctrl-c twice`);
+      const r = spawnSync("claude", [], {
+        stdio: "inherit", cwd: os.homedir(), env: childEnv({ CLAUDE_CONFIG_DIR: a.dir }), shell: process.platform === "win32",
+      });
+      if (r.error) die(`could not start claude: ${r.error.message}`);
+      const email = accountEmail(a.dir);
+      return void console.log(email ? `account '${name}' is logged in as ${email}` : `account '${name}' is not logged in yet`);
+    }
+    case "rm": {
+      if (!rest[0]) die("usage: clamux account rm <name>");
+      const dir = readAccounts()[rest[0]]?.dir;
+      must(removeAccount(rest[0]));
+      return void console.log(`removed account '${rest[0]}'; its directory is still at ${dir}`);
+    }
+    default:
+      die(`unknown account command '${sub}' (ls, add, login, rm)`);
   }
 }
 
@@ -187,19 +255,21 @@ async function main(): Promise<void> {
           agent: { type: "string", short: "a" },
           session: { type: "string", short: "s" },
           group: { type: "string", short: "g" },
+          account: { type: "string", short: "A" },
           detach: { type: "boolean", short: "d" },
           notify: { type: "boolean" },
           "no-notify": { type: "boolean" },
         },
       });
       const [name, dir] = positionals;
-      if (!name) die("usage: clamux new <name> [dir] [-g <group>] [-a claude|agy] [-s <session id>] [-d] [--notify|--no-notify] [-- <agent args>]");
+      if (!name) die("usage: clamux new <name> [dir] [-g <group>] [-A <account>] [-a claude|agy] [-s <session id>] [-d] [--notify|--no-notify] [-- <agent args>]");
       must(await createSession(name, dir, {
         // Notifications are on by default, unless the group says otherwise.
         notify: values["no-notify"] ? false : values.notify ? true : (values.group ? readGroups()[values.group]?.notify : undefined) ?? true,
         agent: values.agent as "claude" | "agy" | "gemini" | undefined,
         sessionId: values.session,
         group: values.group,
+        account: values.account,
         claudeArgs: claudeArgs.length ? claudeArgs : undefined,
       }));
       console.log(`started '${name}'`);
@@ -262,6 +332,8 @@ async function main(): Promise<void> {
     }
     case "group":
       return group(rest, claudeArgs);
+    case "account":
+      return account(rest);
     case "config": {
       const [key, value] = rest;
       if (key === undefined) {
