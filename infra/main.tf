@@ -64,3 +64,26 @@ resource "aws_subnet" "vpc_subnet_secondary_clamux" {
     Name = "Clamux Secondary Subnet"
   }
 }
+
+resource "aws_route_table" "vpc_route_table_clamux" {
+  vpc_id = aws_vpc.vpc_clamux.id
+
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.vpc_gateway_clamux.id
+  }
+
+  tags = {
+    Name = "Clamux VPC Route Table"
+  }
+}
+
+resource "aws_route_table_association" "vpc_route_table_association_primary_clamux" {
+  subnet_id      = aws_subnet.vpc_subnet_primary_clamux.id
+  route_table_id = aws_route_table.vpc_route_table_clamux.id
+}
+
+resource "aws_route_table_association" "vpc_route_table_association_secondary_clamux" {
+  subnet_id      = aws_subnet.vpc_subnet_secondary_clamux.id
+  route_table_id = aws_route_table.vpc_route_table_clamux.id
+}
