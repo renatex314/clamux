@@ -87,3 +87,35 @@ resource "aws_route_table_association" "vpc_route_table_association_secondary_cl
   subnet_id      = aws_subnet.vpc_subnet_secondary_clamux.id
   route_table_id = aws_route_table.vpc_route_table_clamux.id
 }
+
+resource "aws_security_group" "security_group_allow_http_tls_clamux" {
+  name        = "allow_http_tls_clamux"
+  description = "Allow HTTP and HTTPS inbound traffic and all outbound traffic"
+  vpc_id      = aws_vpc.vpc_clamux.id
+
+  tags = {
+    Name = "allow_http_tls_clamux"
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "allow_http_ipv4_clamux" {
+  security_group_id = aws_security_group.security_group_allow_http_tls_clamux.id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 80
+  ip_protocol       = "tcp"
+  to_port           = 80
+}
+
+resource "aws_vpc_security_group_ingress_rule" "allow_tls_ipv4_clamux" {
+  security_group_id = aws_security_group.security_group_allow_http_tls_clamux.id
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 443
+  ip_protocol       = "tcp"
+  to_port           = 443
+}
+
+resource "aws_vpc_security_group_egress_rule" "allow_all_traffic_ipv4_clamux" {
+  security_group_id = aws_security_group.security_group_allow_http_tls_clamux.id
+  cidr_ipv4         = "0.0.0.0/0"
+  ip_protocol       = "-1"
+}
