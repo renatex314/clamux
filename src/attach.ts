@@ -1,6 +1,7 @@
 import { connect, readMessages, send } from "./ipc.js";
 import { pidAlive, readRegistry } from "./registry.js";
 import { fail, type Result } from "./sessions.js";
+import { markSeen } from "./status.js";
 
 export const PREFIX = "\x02"; // Ctrl-b: Ctrl-b d detaches, Ctrl-b Ctrl-b sends a literal Ctrl-b
 const ALT_SCREEN_ON = "\x1b[?1049h";
@@ -62,6 +63,7 @@ export async function attachSession(name: string): Promise<Result> {
       stdin.pause();
       stdout.write(ALT_SCREEN_OFF);
       s.destroy();
+      markSeen(name); // whatever it said while attached has been on screen
       resolve({ ok: true });
     };
 

@@ -2,17 +2,21 @@ import type { EventEmitter } from "node:events";
 import { useEffect, useState } from "react";
 import { Box, Text, render, useApp, useInput, useStdin, useStdout } from "ink";
 import TextInput from "ink-text-input";
-import { fmtAge, snapshot, type DisplayState, type Row } from "./status.js";
+import { fmtAge, markSeen, snapshot, type DisplayState, type Row } from "./status.js";
 import { KEY_TOKEN, PREFIX, attachSession, keyOf } from "./attach.js";
 import { DirPicker } from "./dirpicker.js";
 import {
-  capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, moveSession, openInput, readAccounts, readGroups,
-  removeGroup, resumeSession, sendPrompt, setGroup, validName, type Agent, type Group,
+  capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, moveSession, openInput, readAccounts, readFolded,
+  readGroups, removeGroup, writeFolded, resumeSession, sendPrompt, setGroup, validName, type Agent, type Group,
 } from "./sessions.js";
 
 const COLOR: Record<DisplayState, string> = {
   working: "yellow", waiting: "red", idle: "green", starting: "cyan", dead: "red", ended: "gray", "stale?": "magenta",
 };
+/** Idle with a reply nobody has looked at yet. */
+const UNREAD = "greenBright";
+const colorOf = (r: Row) => (r.unread ? UNREAD : COLOR[r.state]);
+const stateOf = (r: Row) => (r.unread ? "unread" : r.state);
 
 type Mode =
   | { kind: "list" }
@@ -66,7 +70,6 @@ function useSize() {
 
 // Survive attach/detach, which re-renders the app.
 let remembered: string | undefined;
-let rememberedFolds = new Set<string>();
 
 function App({ onAction }: { onAction: (a: Action) => void }) {
   const { exit } = useApp();
@@ -77,8 +80,14 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
   // The selected list line: "s:<session>" or "g:<group>".
   const [selKey, setSelKey] = useState<string | undefined>(remembered);
   useEffect(() => { remembered = selKey; }, [selKey]);
-  const [folded, setFolded] = useState(rememberedFolds);
-  useEffect(() => { rememberedFolds = folded; }, [folded]);
+  // Folded groups are saved, so the dashboard reopens the way it was left.
+  const [folded, setFolded] = useState(readFolded);
+  const toggleFold = (g: string) => setFolded((f) => {
+    const n = new Set(f);
+    if (n.has(g)) n.delete(g); else n.add(g);
+    try { writeFolded(n); } catch { /* the fold still works for this run */ }
+    return n;
+  });
   const [mode, setMode] = useState<Mode>({ kind: "list" });
   const [newAgent, setNewAgent] = useState<Agent>("claude");
   // The Claude Code account a new session runs under; null is the default login.
@@ -112,6 +121,8 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
   const setSelName = (name: string) => setSelKey(`s:${name}`);
   const [shown, setShown] = useState("");
   const previewName = sel?.live ? sel.name : undefined;
+  // The preview shows its screen, so the reply is no longer news.
+  useEffect(() => { if (sel?.unread) { markSeen(sel.name); refreshRows(); } }, [sel?.name, sel?.unread]);
   useEffect(() => {
     const read = () => setShown(previewName ? capturePane(previewName) : "");
     read();
@@ -119,9 +130,9 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
     return () => clearInterval(t);
   }, [previewName, mode.kind]);
 
-  const counts = (["working", "waiting", "idle"] as const)
-    .map((s) => [s, rows.filter((r) => r.state === s).length] as const)
-    .filter(([, n]) => n > 0);
+  const counts = ([["working", COLOR.working], ["waiting", COLOR.waiting], ["unread", UNREAD], ["idle", COLOR.idle]] as const)
+    .map(([s, c]) => [s, c, rows.filter((r) => stateOf(r) === s).length] as const)
+    .filter(([, , n]) => n > 0);
 
   const toList = (message = "") => { setMode({ kind: "list" }); setInput(""); setMsg(message); };
 
@@ -184,10 +195,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
       if (ch === "q") return exit();
       if (key.upArrow || ch === "k") return move(-1);
       if (key.downArrow || ch === "j") return move(1);
-      if (key.return && selGroup) {
-        const g = selGroup;
-        return setFolded((f) => { const n = new Set(f); if (n.has(g)) n.delete(g); else n.add(g); return n; });
-      }
+      if (key.return && selGroup) return toggleFold(selGroup);
       if (key.return && sel) {
         if (!sel.live) return setMsg(`'${sel.name}' is not running`);
         onAction({ attach: sel.name });
@@ -344,8 +352,8 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
       <Box>
         <Text bold color="cyan">clamux</Text>
         <Text dimColor>  {rows.length} session{rows.length === 1 ? "" : "s"}</Text>
-        {counts.map(([s, n]) => (
-          <Text key={s} color={COLOR[s]}>  {n} {s}</Text>
+        {counts.map(([s, c, n]) => (
+          <Text key={s} color={c}>  {n} {s}</Text>
         ))}
       </Box>
 
@@ -366,11 +374,11 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
             const r = it.row;
             return (
               <Box key={r.name}>
-                <Text color={COLOR[r.state]}>{it.indent ? "  " : ""}{on ? "▸" : " "}● </Text>
+                <Text color={colorOf(r)}>{it.indent ? "  " : ""}{on ? "▸" : " "}● </Text>
                 <Box flexGrow={1} flexShrink={1} marginRight={1}>
-                  <Text bold={on} wrap="truncate-end">{r.name}</Text>
+                  <Text bold={on || r.unread} wrap="truncate-end">{r.name}</Text>
                 </Box>
-                <Box width={9} flexShrink={0}><Text color={COLOR[r.state]}>{r.state}</Text></Box>
+                <Box width={9} flexShrink={0}><Text color={colorOf(r)} bold={r.unread}>{stateOf(r)}</Text></Box>
                 <Box width={6} flexShrink={0} justifyContent="flex-end"><Text dimColor>{fmtAge(r.ageS)}</Text></Box>
               </Box>
             );
@@ -422,7 +430,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
               <Text dimColor>sessions</Text>
               {rows.filter((r) => r.group === selGroup).map((r) => (
                 <Text key={r.name} wrap="truncate-end">
-                  <Text color={COLOR[r.state]}>● </Text>{r.name}<Text dimColor>  {r.state}</Text>
+                  <Text color={colorOf(r)}>● </Text>{r.name}<Text dimColor>  {stateOf(r)}</Text>
                 </Text>
               ))}
               {!rows.some((r) => r.group === selGroup) && <Text dimColor>none yet - press n to start one here</Text>}

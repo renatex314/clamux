@@ -23,7 +23,8 @@ async function run(body: () => Promise<ToolResult> | ToolResult): Promise<ToolRe
 }
 
 const brief = (s: Session) => ({
-  name: s.name, agent: s.agent, state: s.state, detail: s.detail || undefined, for_seconds: Math.round(s.ageS),
+  name: s.name, agent: s.agent, state: s.state, detail: s.detail || undefined,
+  unread: s.unread || undefined, waiting_on: s.waitingOn.length ? s.waitingOn : undefined, for_seconds: Math.round(s.ageS),
   dir: s.cwd, group: s.group ?? undefined, account: s.account ?? undefined, live: s.live, resumable: s.resumable,
 });
 
@@ -54,7 +55,7 @@ export async function runMcp(): Promise<void> {
 
   server.registerTool("list_sessions", {
     title: "List sessions",
-    description: "List all known Claude Code and Antigravity CLI (agy) sessions with their agent ('claude' or 'agy') and state: working, idle, waiting (needs input), starting, ended or dead. 'resumable' sessions are not running but can be restarted with resume_session.",
+    description: "List all known Claude Code and Antigravity CLI (agy) sessions with their agent ('claude' or 'agy') and state: working, idle, waiting (needs input), starting, ended or dead. 'unread' marks an idle session whose latest reply nobody has read yet; 'waiting_on' lists the sessions it is waiting on (ask / wait_for_session). 'resumable' sessions are not running but can be restarted with resume_session.",
     annotations: { readOnlyHint: true },
   }, () => run(() => json(cx.list().map(brief))));
 
@@ -125,7 +126,10 @@ export async function runMcp(): Promise<void> {
   }, ({ name: n, timeout_seconds }) => run(async () => {
     try {
       const s = await cx.waitFor(n, (x) => x.state !== "working" && x.state !== "starting", { timeoutMs: timeout_seconds * 1000 });
-      return s.state === "idle" ? text(cx.lastAnswer(n) ?? "(idle; no reply yet)") : stalled(s);
+      if (s.state !== "idle") return stalled(s);
+      const answer = cx.lastAnswer(n);
+      if (answer !== null) cx.markRead(n);
+      return text(answer ?? "(idle; no reply yet)");
     } catch (e) {
       if (e instanceof ClamuxError && e.code === "TIMEOUT") return stalled(cx.get(n) as Session);
       throw e;
@@ -137,7 +141,11 @@ export async function runMcp(): Promise<void> {
     description: "The agent's most recent reply in a session, as plain text, without sending anything.",
     inputSchema: { name },
     annotations: { readOnlyHint: true },
-  }, ({ name: n }) => run(() => text(cx.lastAnswer(n) ?? "(no reply yet)")));
+  }, ({ name: n }) => run(() => {
+    const answer = cx.lastAnswer(n);
+    if (answer !== null) cx.markRead(n);
+    return text(answer ?? "(no reply yet)");
+  }));
 
   server.registerTool("read_screen", {
     title: "Read the screen",

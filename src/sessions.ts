@@ -10,7 +10,7 @@ import {
   defaultClaudeDir, newAccountDir, readAccounts, shareDefaults, writeAccounts, type Account,
 } from "./accounts.js";
 import { readConfig } from "./config.js";
-import { readGroups, writeGroups, type Group } from "./groups.js";
+import { readFolded, readGroups, writeFolded, writeGroups, type Group } from "./groups.js";
 import { connect, readMessages, send, type Msg } from "./ipc.js";
 import { keyToBytes } from "./keys.js";
 import { HOME_DIR, RUN_DIR, SETTINGS, configFile, errorFile, screenFile, selfPath } from "./paths.js";
@@ -21,7 +21,7 @@ import { findClaudeSession, isUuid } from "./transcript.js";
 
 export { liveSessions } from "./registry.js";
 export { parseAgent, type Agent } from "./saved.js";
-export { readGroups, type Group } from "./groups.js";
+export { readFolded, readGroups, writeFolded, type Group } from "./groups.js";
 export { readConfig, writeConfig, type Config } from "./config.js";
 export { accountEmail, defaultClaudeDir, readAccounts, type Account } from "./accounts.js";
 
@@ -296,6 +296,7 @@ export function removeGroup(name: string): Result {
   for (const n of groupMembers().get(name) ?? []) updateSaved(n, { group: null });
   delete groups[name];
   writeGroups(groups);
+  writeFolded(readFolded()); // drops the deleted group, so a new group with its name starts unfolded
   return { ok: true };
 }
 

@@ -334,6 +334,84 @@ describe("Clamux SDK", () => {
     cx.removeGroup("wg");
   });
 
+  test("a finished turn is unread until it is looked at; ask leaves it read", async () => {
+    await cx.create("u1", { dir: tmp });
+    await cx.waitForIdle("u1", { timeoutMs: 8000 });
+    assert.equal(cx.get("u1").unread, false); // starting up is not news
+    await cx.send("u1", "hello");
+    await cx.waitFor("u1", (s) => s.unread, { timeoutMs: 8000 });
+    assert.equal(cx.get("u1").state, "idle");
+    cx.markRead("u1");
+    assert.equal(cx.get("u1").unread, false);
+    await cx.send("u1", "again");
+    await cx.waitFor("u1", (s) => s.state === "working", { timeoutMs: 8000 });
+    assert.equal(cx.get("u1").unread, false);
+    await cx.waitFor("u1", (s) => s.unread, { timeoutMs: 8000 });
+    const r = await cx.ask("u1", "and once more", { timeoutMs: 8000 });
+    assert.equal(r.answer, "answer: and once more");
+    assert.equal(cx.get("u1").unread, false); // the caller got the reply
+    await cx.kill("u1"); cx.forget("u1");
+  });
+
+  test("a session waiting on another one (ask / waitFor) shows as working until the reply arrives", async () => {
+    await cx.create("da", { dir: tmp });
+    await cx.create("db", { dir: tmp });
+    await cx.waitForIdle("da", { timeoutMs: 8000 });
+    await cx.waitForIdle("db", { timeoutMs: 8000 });
+    assert.equal(cx.get("da").state, "idle");
+
+    // Act as the agent running inside 'da' (its MCP server and shell commands inherit CLAMUX_NAME).
+    process.env.CLAMUX_NAME = "da";
+    const asking = cx.ask("db", "a slow job", { timeoutMs: 8000 });
+    delete process.env.CLAMUX_NAME;
+    await cx.waitFor("db", (s) => s.state === "working", { timeoutMs: 8000 });
+    const da = cx.get("da");
+    assert.equal(da.state, "working");
+    assert.deepEqual(da.waitingOn, ["db"]);
+    assert.match(da.detail, /waiting on db/);
+    assert.equal((await asking).answer, "answer: a slow job");
+    assert.equal(cx.get("da").state, "idle");
+    assert.deepEqual(cx.get("da").waitingOn, []);
+
+    // A record left by a caller that is gone, or pointing at a stopped session, is ignored.
+    const dir = path.join(tmp, ".clamux/delegations");
+    fs.writeFileSync(path.join(dir, "orphan.json"), JSON.stringify({ from: "da", to: "db", pid: 2 ** 22 + 12345, startedAt: Date.now(), until: null }));
+    assert.equal(cx.get("da").state, "idle");
+    assert.equal(fs.existsSync(path.join(dir, "orphan.json")), false);
+    fs.writeFileSync(path.join(dir, "gone.json"), JSON.stringify({ from: "da", to: "nobody", pid: process.pid, startedAt: Date.now(), until: null }));
+    assert.equal(cx.get("da").state, "idle");
+    fs.rmSync(path.join(dir, "gone.json"));
+    for (const n of ["da", "db"]) { await cx.kill(n); cx.forget(n); }
+  });
+
+  test("the dashboard remembers folded groups across restarts", { skip: process.platform === "win32" }, async () => {
+    cx.setGroup("f1", { dir: tmp });
+    cx.setGroup("f2", { dir: tmp });
+    const ui = path.join(tmp, ".clamux/ui.json");
+    const dashboard = async (keys) => {
+      const p = pty.spawn(process.execPath, [path.join(root, "dist/cli.js")], { cols: 120, rows: 30, cwd: tmp, env: process.env });
+      let out = "";
+      p.onData((d) => { out += d; });
+      const until = async (re) => {
+        for (let i = 0; i < 100 && !re.test(out); i++) await sleep(50);
+        assert.match(out, re);
+      };
+      await until(/f2/);
+      for (const k of keys) { p.write(k.key); await until(k.then); }
+      p.write("q");
+      await new Promise((r) => p.onExit(r));
+      return out;
+    };
+    await dashboard([{ key: "\r", then: /▸ f1/ }]); // the first line is group f1: Enter folds it
+    assert.deepEqual(JSON.parse(fs.readFileSync(ui, "utf8")).folded, ["f1"]);
+    const again = await dashboard([]);
+    assert.match(again, /▸ f1/);
+    assert.match(again, /▾ f2/);
+    cx.removeGroup("f1"); // leaves nothing behind
+    assert.deepEqual(JSON.parse(fs.readFileSync(ui, "utf8")).folded, []);
+    cx.removeGroup("f2");
+  });
+
   test("groups give new sessions their defaults, and sessions can move between groups", async () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(tmp, "grp-")));
     assert.equal(throwsCode(() => cx.setGroup("bad name!")), "INVALID");

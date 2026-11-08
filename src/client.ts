@@ -1,5 +1,6 @@
 import { ClamuxError } from "./errors.js";
-import { readStatus, snapshot, type DisplayState, type Row } from "./status.js";
+import { markSeen, readStatus, snapshot, type DisplayState, type Row } from "./status.js";
+import { delegating } from "./delegation.js";
 import { attachSession } from "./attach.js";
 import { lastAnswer } from "./transcript.js";
 import {
@@ -168,7 +169,12 @@ export class Clamux {
    * Resolves once `predicate` holds for the session. The session must stay alive; if it dies while
    * waiting this rejects with NOT_FOUND.
    */
-  async waitFor(name: string, predicate: (s: Session) => boolean, opts: WaitOptions = {}): Promise<Session> {
+  waitFor(name: string, predicate: (s: Session) => boolean, opts: WaitOptions = {}): Promise<Session> {
+    // When the caller is itself a clamux session, it shows as working (waiting on `name`) meanwhile.
+    return delegating(name, opts.timeoutMs, () => this.poll(name, predicate, opts));
+  }
+
+  private async poll(name: string, predicate: (s: Session) => boolean, opts: WaitOptions): Promise<Session> {
     const { timeoutMs, pollMs = 500, signal } = opts;
     const deadline = timeoutMs === undefined ? Infinity : Date.now() + timeoutMs;
     let last: Session | undefined;
@@ -194,11 +200,15 @@ export class Clamux {
    * after the prompt was sent). If Claude stops to ask for permission the session sits in `waiting`
    * and this will time out - handle that with `watch()`/`press()` or a `timeoutMs`.
    */
-  async ask(name: string, prompt: string, opts: SendOptions & WaitOptions = {}): Promise<AskResult> {
+  ask(name: string, prompt: string, opts: SendOptions & WaitOptions = {}): Promise<AskResult> {
+    return delegating(name, opts.timeoutMs, () => this.askNow(name, prompt, opts));
+  }
+
+  private async askNow(name: string, prompt: string, opts: SendOptions & WaitOptions): Promise<AskResult> {
     const sentAt = Date.now() / 1000;
     await this.send(name, prompt, opts);
     // "idle" is only meaningful if the session entered it after we sent the prompt.
-    const session = await this.waitFor(
+    const session = await this.poll(
       name,
       (s) => s.state === "idle" && (readStatus(name)?.since ?? 0) >= sentAt,
       opts,
@@ -212,7 +222,14 @@ export class Clamux {
       if (answer !== null || Date.now() >= giveUp || opts.signal?.aborted) break;
       await sleep(100, opts.signal);
     }
-    return { session, answer, screen, transcriptPath: session.transcriptPath };
+    if (answer !== null) markSeen(name); // the caller has the reply; it is not news on the dashboard
+    return { session: this.get(name) ?? session, answer, screen, transcriptPath: session.transcriptPath };
+  }
+
+  /** Clears the session's `unread` flag, as if its latest reply had been looked at. */
+  markRead(name: string): void {
+    this.require(name);
+    markSeen(name);
   }
 
   /**

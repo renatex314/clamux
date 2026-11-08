@@ -19,7 +19,7 @@ A terminal dashboard, CLI, TypeScript SDK and MCP server for running many Claude
 
 ## Features
 
-- **Live status for every session**: `working` (and on which tool), `idle`, `waiting` for you, `ended`. It comes from Claude Code's lifecycle hooks, not from scraping the screen.
+- **Live status for every session**: `working` (and on which tool), `idle`, `waiting` for you, `ended`. It comes from Claude Code's lifecycle hooks, not from scraping the screen. Replies you haven't looked at yet stand out as `unread`, and a session waiting on another one shows as `working`.
 - **A dashboard with a live preview** of the selected session. Attach to any session with `Enter`, detach with `Ctrl-b d`, or send keys and prompts without leaving the list.
 - **Sessions outlive your terminal.** Each one runs in its own background process. Close the dashboard, reboot, or crash, and `resume` continues the same conversation.
 - **Groups** with defaults for new sessions: the folder they start in, notifications, agent, arguments, and account.
@@ -57,7 +57,7 @@ Requires Node 20+ and the `claude` CLI (or `agy`) on your PATH. For the SDK, add
 | Key | Action |
 |---|---|
 | `↑` `↓` / `j` `k` | select a session or a group |
-| `Enter` | attach to it; press `Ctrl-b` then `d` to detach and come back to the dashboard. On a group: fold or unfold it |
+| `Enter` | attach to it; press `Ctrl-b` then `d` to detach and come back to the dashboard. On a group: fold or unfold it (remembered the next time the dashboard opens) |
 | `n` | new session: asks for a name, then opens a folder picker (`↑` `↓` move, `Enter`/`→` open a folder, `Enter` on "✓ use this folder" picks it, `←`/`Backspace` go up, type to filter, or type a path starting with `/` or `~`); while typing the name, `Tab` switches between `claude` and `agy` and `↑` `↓` pick the [account](#accounts) |
 | `u` | new session that continues an existing conversation: asks for a name, then a Claude session UUID (or an agy conversation id); it starts in the directory that conversation ran in |
 | `i` | send keys: every key (`Esc`, `Ctrl-c`, arrows...) goes to the selected session while the dashboard stays on screen; `Ctrl-b` then `d` stops, `Ctrl-b` `Ctrl-b` sends a literal `Ctrl-b` |
@@ -158,6 +158,7 @@ for await (const change of cx.watch()) {                // every state change, u
 | `send(name, prompt, { force })` | type a prompt; throws `BUSY` if the session is working/waiting |
 | `ask(name, prompt, opts)` | `send` then wait until Claude finishes that turn (working -> idle); returns `{ session, answer, screen, transcriptPath }`, where `answer` is Claude's final reply as plain text |
 | `lastAnswer(name)` | Claude's most recent reply in the session (read from its transcript), or `null` |
+| `markRead(name)` | clear the session's `unread` flag (`ask` does it for you once it has the reply) |
 | `waitFor(name, predicate, { timeoutMs, pollMs, signal })` / `waitForIdle` | wait for a condition |
 | `press(name, ...keys)` | key names (`Enter`, `Down`, `Escape`, `C-c`, ...) or literal text, e.g. `press("x", "y")` to answer a permission prompt |
 | `screen(name)` | the exact screen right now (async) |
@@ -216,6 +217,8 @@ Other clients: `{ "mcpServers": { "clamux": { "command": "npx", "args": ["-y", "
 
 Long waits don't fail: if a session is still working at the timeout, or stops on a permission prompt or the first-time folder-trust prompt, the tool returns its state and screen with a hint, and the caller continues with `wait_for_session` or `press_keys`. Errors are tool errors prefixed with the code (`NOT_FOUND`, `BUSY`, ...). Sessions keep running after the MCP server exits.
 
+While a session's agent waits in `ask` or `wait_for_session` on another session, the dashboard shows it as `working (waiting on <name>)` instead of idle, all the way down a chain of delegations; a `waiting` prompt in the caller still shows as `waiting`. The record is dropped when the call returns, and ignored if the caller's process is gone, the other session stopped, or the call's timeout passed. The same goes for the SDK's `ask` and `waitFor` run from inside a session (for example a script the agent runs).
+
 > [!WARNING]
 > Whoever can call these tools can make Claude Code run prompts (and so tools) in any directory you can reach. Add the server only to clients you trust.
 
@@ -251,8 +254,9 @@ On Windows the host uses the ConPTY that ships with node-pty (the one Windows Te
 
 | State | |
 |---|---|
-| `working` | busy, with the current tool |
+| `working` | busy, with the current tool, or waiting on another session (`waiting on <name>`) through `ask` / `wait_for_session` |
 | `idle` | done, waiting for the next prompt |
+| `unread` | idle, with a reply nobody has looked at yet. Attaching, selecting it in the dashboard, or getting the reply through `ask` / `get_answer` marks it read. The SDK and MCP report it as `idle` with `unread: true`, and piped `clamux ls` output as `idle` |
 | `waiting` | needs permission or an answer from you |
 | `starting` | not ready yet, e.g. sitting on the folder-trust prompt |
 | `stale?` | working, but no event for 15 minutes |
@@ -276,6 +280,7 @@ On Windows, run `npm link` instead (or call `node dist\cli.js`). `node-pty` prov
 
 - `src/hook.ts`: the hook Claude Code calls on each event; writes `~/.clamux/status/<name>.json`
 - `src/status.ts`: reads status files and derives the displayed state
+- `src/delegation.ts`: records which session is waiting on which (`ask` / `waitFor` from inside a session), so the caller shows as working
 - `src/host.ts`: the per-session host: pty, virtual screen, socket server
 - `src/sessions.ts`, `src/registry.ts`, `src/attach.ts`: create / resume / send / kill / attach, and discovering live sessions
 - `src/saved.ts`, `src/groups.ts`, `src/accounts.ts`, `src/config.ts`: the per-session records that make resuming possible, groups, accounts, and settings

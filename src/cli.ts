@@ -78,8 +78,9 @@ function ls(): void {
   const acct = (v: string) => (aw ? `${v.padEnd(aw)}  ` : "");
   console.log(`${"NAME".padEnd(w)}  ${"GROUP".padEnd(gw)}  ${acct("ACCOUNT")}${"AGENT".padEnd(6)}  ${"STATE".padEnd(8)}  ${"FOR".padEnd(7)}  ${"DETAIL".padEnd(dw)}  DIR`);
   for (const r of rows) {
-    const s = r.state.padEnd(8);
-    const state = color ? `\x1b[${COLORS[r.state]}m${s}\x1b[0m` : s;
+    // On a terminal an idle session with a reply nobody has read yet stands out; piped output keeps "idle".
+    const s = (color && r.unread ? "unread" : r.state).padEnd(8);
+    const state = color ? `\x1b[${r.unread ? "92;1" : COLORS[r.state]}m${s}\x1b[0m` : s;
     console.log(`${r.name.padEnd(w)}  ${(r.group ?? "-").padEnd(gw)}  ${acct(r.account ?? "-")}${r.agent.padEnd(6)}  ${state}  ${fmtAge(r.ageS).padEnd(7)}  ${r.detail.padEnd(dw)}  ${shown(r.cwd)}`);
   }
 }

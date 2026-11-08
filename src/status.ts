@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { STATUS_DIR } from "./paths.js";
 import { readSaved, savedNames, type Agent } from "./saved.js";
+import { readDelegations } from "./delegation.js";
 
 export type HookState = "starting" | "working" | "idle" | "waiting" | "ended";
 export type DisplayState = HookState | "dead" | "stale?";
@@ -16,6 +17,8 @@ export interface Status {
   cwd?: string | null;
   session_id?: string | null;
   transcript_path?: string | null;
+  /** The agent finished a turn that nobody has looked at yet (attach, dashboard preview, ask). */
+  unread?: boolean;
 }
 
 export interface Row {
@@ -34,6 +37,10 @@ export interface Row {
   account: string | null;
   /** Not running, but a saved record exists, so `resume` can bring it back. */
   resumable: boolean;
+  /** Idle with a reply nobody has seen yet (cleared by attaching, previewing it in the dashboard, or `markRead`). */
+  unread: boolean;
+  /** Sessions this one is waiting on through `ask` / `wait_for_session`; while there are any it shows as working. */
+  waitingOn: string[];
 }
 
 /** A "working" status that has not been refreshed for this long is flagged. */
@@ -64,6 +71,11 @@ export function writeStatus(name: string, fields: Partial<Status>): HookState | 
   return prev;
 }
 
+/** Marks the session's latest reply as seen. */
+export function markSeen(name: string): void {
+  if (readStatus(name)?.unread) writeStatus(name, { unread: false });
+}
+
 export function removeStatus(name: string): void {
   fs.rmSync(file(name), { force: true });
 }
@@ -76,7 +88,7 @@ export function statusNames(): string[] {
   }
 }
 
-export function describe(name: string, live: Set<string>): Row {
+export function describe(name: string, live: Set<string>, delegations = readDelegations(live)): Row {
   const st = readStatus(name);
   const now = nowS();
   const sv = readSaved(name);
@@ -90,6 +102,8 @@ export function describe(name: string, live: Set<string>): Row {
     group: sv?.group ?? null,
     account: sv?.account ?? null,
     resumable: !live.has(name) && sv !== null,
+    unread: false,
+    waitingOn: [] as string[],
   };
   if (!base.live) {
     const state: DisplayState = st && st.state !== "ended" ? "dead" : "ended";
@@ -98,17 +112,27 @@ export function describe(name: string, live: Set<string>): Row {
   if (!st) return { ...base, state: "starting", detail: "", ageS: 0 };
   let state: DisplayState = st.state;
   let detail = st.tool ?? "";
+  let ageS = now - (st.since ?? now);
   if (state === "waiting") detail = (st.message ?? "").slice(0, 50);
   if (state === "working" && st.updated && now - st.updated > STALE_AFTER_S) {
     state = "stale?";
     detail = `no event for ${fmtAge(now - st.updated)}`;
   }
-  return { ...base, state, detail, ageS: now - (st.since ?? now) };
+  const deleg = delegations.get(name);
+  // Waiting on another session is still work - unless it needs a key itself, which must stay visible.
+  if (deleg && (state === "idle" || state === "working" || state === "stale?")) {
+    if (state !== "working") ageS = now - deleg.since / 1000;
+    state = "working";
+    detail = `waiting on ${deleg.to.join(", ")}`;
+    return { ...base, state, detail, ageS, waitingOn: deleg.to };
+  }
+  return { ...base, state, detail, ageS, unread: state === "idle" && st.unread === true };
 }
 
 export function snapshot(live: Set<string>): Row[] {
   const names = [...new Set([...live, ...statusNames(), ...savedNames()])].sort();
-  return names.map((n) => describe(n, live));
+  const delegations = readDelegations(live);
+  return names.map((n) => describe(n, live, delegations));
 }
 
 export function fmtAge(secs: number): string {

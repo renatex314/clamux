@@ -40,7 +40,7 @@ export function runHook(eventArg?: string): void {
       // In agy, SessionStart fires when the first prompt creates the conversation (right before PreInvocation).
       case "SessionStart": fields = { state: isAgy ? "working" : "idle", tool: null }; break;
       case "UserPromptSubmit":
-      case "PreInvocation": fields = { state: "working", tool: null }; break;
+      case "PreInvocation": fields = { state: "working", tool: null, unread: false }; break;
       case "PreToolUse": fields = { state: "working", tool: toolName }; break;
       case "PostToolUse": fields = { state: "working", tool: isAgy ? toolName : null }; break;
       case "Notification":
@@ -48,7 +48,7 @@ export function runHook(eventArg?: string): void {
         if (cur?.state === "idle" || p.notification_type === "idle_prompt") return;
         fields = { state: "waiting", tool: null, message: p.message ?? null };
         break;
-      case "Stop": fields = { state: "idle", tool: null }; break;
+      case "Stop": fields = { state: "idle", tool: null, unread: true }; break;
       case "SessionEnd": fields = { state: "ended", tool: null }; break;
       default:
         if (isAgy || p.conversationId) process.stdout.write("{}\n");

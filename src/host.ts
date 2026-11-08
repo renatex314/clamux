@@ -202,11 +202,14 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
     }
     if (chunk) proc.write(chunk);
     if (bracketed) proc.write("\x1b[201~");
+    // Wait for the text to show up and the screen to settle. A busy app (Claude Code just after starting)
+    // can take well over the settle time to echo anything, so quiet alone does not mean it is done.
     for (;;) {
       await sleep(50);
       if (exited) return { ok: false, error: "the session ended while the prompt was being typed" };
       const quiet = Date.now() - Math.max(lastOutputAt, startedAt) >= PASTE_SETTLE_MS;
-      if (quiet || Date.now() - startedAt >= PASTE_MAX_WAIT_MS) break;
+      const shown = !text.trim() || screenText() !== before;
+      if ((quiet && shown) || Date.now() - startedAt >= PASTE_MAX_WAIT_MS) break;
     }
     await flushed();
     if (text.trim() && screenText() === before) {
