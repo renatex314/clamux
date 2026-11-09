@@ -119,3 +119,30 @@ resource "aws_vpc_security_group_egress_rule" "allow_all_traffic_ipv4_clamux" {
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
 }
+
+data "aws_iam_policy_document" "ec2_ssm_access_policy_document_clamux" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "ec2_ssm_iam_role_clamux" {
+  name               = "ec2_ssm_iam_role_clamux"
+  assume_role_policy = data.aws_iam_policy_document.ec2_ssm_access_policy_document_clamux.json
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_role_policy_attachment_clamux" {
+  role       = aws_iam_role.ec2_ssm_iam_role_clamux.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_instance_profile" "ec2_iam_instance_profile_clamux" {
+  name = "ec2_iam_instance_profile_clamux"
+  role = aws_iam_role.ec2_ssm_iam_role_clamux.name
+}
