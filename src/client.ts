@@ -5,7 +5,7 @@ import { attachSession } from "./attach.js";
 import { lastAnswer } from "./transcript.js";
 import {
   accountEmail, accountMembers, addAccount, capturePane, cleanStale, createSession, fetchScreen, forgetSession,
-  groupMembers, killSession, liveSessions, moveSession, pressKeys, readAccounts, readGroups, removeAccount, removeGroup,
+  groupMembers, killSession, liveSessions, moveSession, pressKeys, readAccounts, readGroups, removeAccount, removeGroup, renameSession,
   resumeSession, sendPrompt, setGroup, type Agent, type Group, type Result,
 } from "./sessions.js";
 
@@ -51,7 +51,11 @@ export interface CreateOptions {
   notify?: boolean;
   /** Put the session in this group; the group's defaults fill in `dir`, `notify`, `agent`, `args` and `account` when they are left out. */
   group?: string;
-  /** Run Claude Code under this account (see `addAccount`). Default: the group's, else your default Claude login. */
+  /**
+   * Run Claude Code under this account (see `addAccount`). Default: the group's, else - when called from inside a
+   * clamux session, e.g. by its agent through MCP - that session's account, else your default Claude login. `""`
+   * picks the default login.
+   */
   account?: string;
   /** Extra arguments passed to the agent CLI (`claude` or `agy`), e.g. ["--model", "opus"]. */
   claudeArgs?: string[];
@@ -274,6 +278,12 @@ export class Clamux {
     const r = await resumeSession(name);
     if (!r.ok) throw new ClamuxError(r.code, r.error);
     return { session: this.require(name), resumed: r.resumed };
+  }
+
+  /** Renames a session, running or not; a running one keeps running. Throws EXISTS if the new name is taken. */
+  async rename(name: string, to: string): Promise<Session> {
+    unwrap(await renameSession(name, to));
+    return this.get(to) as Session;
   }
 
   /** Deletes a session that is not running, along with its saved record. Throws BUSY if it is running. */

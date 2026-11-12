@@ -3,7 +3,7 @@ import net from "node:net";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { childEnv } from "./env.js";
-import { RUN_DIR, endpointFor, errorFile, screenFile } from "./paths.js";
+import { RUN_DIR, configFile, endpointFor, errorFile, idFile, registryFile, screenFile } from "./paths.js";
 import { readMessages, send, type Msg } from "./ipc.js";
 import { removeRunFiles, writeRegistry } from "./registry.js";
 import type { Agent } from "./saved.js";
@@ -80,6 +80,14 @@ function modeSequences(m: { bracketedPasteMode: boolean; applicationCursorKeysMo
 
 /** Runs one session: owns the Claude Code pty and a virtual screen, and serves clients on a socket. */
 export async function runHost(name: string, cfg: HostConfig, settingsPath: string): Promise<void> {
+  // Fixed for the life of the host; the session's current name is kept under it (see identity.ts), so the agent's
+  // hooks and tools still find the session after a rename.
+  const hostId = process.env.CLAMUX_ID ?? null;
+  const writeId = () => {
+    if (!hostId) return;
+    fs.mkdirSync(path.dirname(idFile(hostId)), { recursive: true });
+    fs.writeFileSync(idFile(hostId), name);
+  };
   ensureSpawnHelper();
   const pty = await import("node-pty");
   const { Terminal } = (await import("@xterm/headless")).default;
@@ -227,6 +235,12 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
         case "input":
           if (!exited) proc.write(String(m.d ?? ""));
           break;
+        case "paste": // as the terminal would paste it: bracketed if the app asked for that
+          if (!exited) {
+            const text = String(m.d ?? "");
+            proc.write(term.modes.bracketedPasteMode ? `\x1b[200~${text.replace(/\r?\n/g, "\r")}\x1b[201~` : text);
+          }
+          break;
         case "prompt": { // one at a time, so two prompts never interleave
           const text = String(m.d ?? "");
           typing = typing.then(async () => {
@@ -256,8 +270,26 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
           if (!exited) proc.kill();
           break;
         case "ping":
-          send(sock, { t: "pong", prompt: true }); // `prompt`: this host understands "prompt" messages
+          send(sock, { t: "pong", prompt: true, paste: true, rename: Boolean(hostId) }); // what this host understands
           break;
+        case "rename": { // the caller has checked the new name is free; the status and saved records are its job
+          const to = String(m.to ?? "");
+          try {
+            for (const f of [registryFile, configFile, screenFile, errorFile]) {
+              try {
+                fs.renameSync(f(name), f(to));
+              } catch (e) {
+                if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+              }
+            }
+            name = to;
+            writeId();
+            send(sock, { t: "renamed", ok: true });
+          } catch (e) {
+            send(sock, { t: "renamed", ok: false, error: e instanceof Error ? e.message : String(e) });
+          }
+          break;
+        }
       }
     });
     sock.on("error", () => {});
@@ -266,7 +298,7 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
     });
   });
 
-  const endpoint = endpointFor(name);
+  const endpoint = endpointFor(hostId ? `id-${hostId}` : name);
   if (process.platform !== "win32") fs.rmSync(endpoint, { force: true }); // stale socket from a crash
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -279,6 +311,7 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
     if (screenTimer) clearTimeout(screenTimer);
     server.close();
     removeRunFiles(name, endpoint);
+    if (hostId) fs.rmSync(idFile(hostId), { force: true });
     setTimeout(() => process.exit(0), 150); // let the exit frames flush
   };
 
@@ -306,6 +339,7 @@ export async function runHost(name: string, cfg: HostConfig, settingsPath: strin
     }, NOTIFY_POLL_MS).unref();
   }
 
+  writeId();
   writeScreen();
   writeRegistry(name, { pid: process.pid, endpoint, cwd: cfg.cwd, startedAt: Date.now() / 1000 });
 }

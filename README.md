@@ -62,6 +62,8 @@ Requires Node 20+ and the `claude` CLI (or `agy`) on your PATH. For the SDK, add
 | `u` | new session that continues an existing conversation: asks for a name, then a Claude session UUID (or an agy conversation id); it starts in the directory that conversation ran in |
 | `i` | send keys: every key (`Esc`, `Ctrl-c`, arrows...) goes to the selected session while the dashboard stays on screen; `Ctrl-b` then `d` stops, `Ctrl-b` `Ctrl-b` sends a literal `Ctrl-b` |
 | `s` | type a prompt into the selected session (asks first if it is busy) |
+| `,` | rename the selected session; a running one keeps running |
+| paste / drop a file | goes into the selected session as a paste, without submitting it (then `i` or `Enter` to keep typing), the same as when attached |
 | `r` | resume the selected session if it is not running |
 | `x` | kill the selected session (it stays saved, so `r` brings it back) |
 | `d` | delete the selected session and its saved record |
@@ -103,7 +105,7 @@ clamux new api ~/code/api -A work  # or pick it with ↑↓ in the dashboard, or
 clamux account ls                  # every account and who it is logged in as
 ```
 
-A new account shares your default one's `settings.json`, `CLAUDE.md`, skills, agents, commands and plugins (as links, so changes show up in both) and starts with a copy of its user-scope MCP servers; pass `--no-share` for a clean one. To use a config directory you already have, pass it with `--dir`. A session keeps its account when it is resumed, and `-s <session id>` looks the conversation up in that account. `clamux account rm` only unregisters an account: its directory, with its login and conversations, stays on disk. Accounts apply to Claude Code; agy has its own login.
+A new account shares your default one's `settings.json`, `CLAUDE.md`, skills, agents, commands and plugins (as links, so changes show up in both) and starts with a copy of its user-scope MCP servers; pass `--no-share` for a clean one. To use a config directory you already have, pass it with `--dir`. A session started from inside another one (its agent calling `create_session` through MCP, or a script it runs) gets the caller's account unless an account or a group with one is given; pass `account: ""` for the default login. A session keeps its account when it is resumed, and `-s <session id>` looks the conversation up in that account. `clamux account rm` only unregisters an account: its directory, with its login and conversations, stays on disk. Accounts apply to Claude Code; agy has its own login.
 
 ## CLI
 
@@ -113,11 +115,12 @@ A new account shares your default one's `settings.json`, `CLAUDE.md`, skills, ag
 |---|---|
 | `clamux new <name> [dir] [-g <group>] [-A <account>] [-a claude\|agy] [-s <session id>] [-d] [--notify\|--no-notify] [-- <agent args>]` | start a session (and attach, unless `-d`) |
 | `clamux ls` | every session with its group, agent, state and directory |
-| `clamux attach <name>` | connect your terminal to it; `Ctrl-b d` detaches |
+| `clamux attach <name>` | connect your terminal to it; `Ctrl-b d` detaches (also with Caps Lock on, and in the keyboard modes Claude Code turns on), and the terminal is left as it was |
 | `clamux send <name> <prompt...> [--force]` | type a prompt into it (refuses if it is busy, unless `--force`) |
 | `clamux peek <name>` | print its screen |
 | `clamux kill <name>` | stop it; it stays saved and can be resumed |
 | `clamux resume <name> [-d]` / `resume --all` | restart a saved session (or all of them), continuing its conversation |
+| `clamux rename <name> <new-name>` | rename a session; a running one keeps running |
 | `clamux forget <name>` | delete a stopped session and its saved record |
 | `clamux group ls\|set\|rm\|move` | manage [groups](#groups) |
 | `clamux account ls\|add\|login\|rm` | manage Claude [accounts](#accounts) |
@@ -166,6 +169,7 @@ for await (const change of cx.watch()) {                // every state change, u
 | `watch({ pollMs, signal })` | async iterator of `{ name, from, to, session }` |
 | `kill(name)` | stop a session; it stays saved (`resumable: true`) |
 | `resume(name)` | restart a saved session and continue its conversation; returns `{ session, resumed }` |
+| `rename(name, to)` | rename a session, running or not (`EXISTS` if the name is taken) |
 | `forget(name)` | delete a stopped session and its saved record (`BUSY` if it is running) |
 | `attach` / `clean` | as in the CLI (`attach` is async) |
 
@@ -214,6 +218,7 @@ Other clients: `{ "mcpServers": { "clamux": { "command": "npx", "args": ["-y", "
 | `send_prompt` / `wait_for_session` / `get_answer` | the same in separate steps: send and return, wait until it stops working, read the latest reply |
 | `read_screen` / `press_keys` | see the terminal and send keystrokes, e.g. to answer a permission prompt |
 | `kill_session` / `resume_session` / `forget_session` | stop (stays saved), continue the conversation later, delete for good |
+| `rename_session` | give a session a new name; a running one keeps running |
 
 Long waits don't fail: if a session is still working at the timeout, or stops on a permission prompt or the first-time folder-trust prompt, the tool returns its state and screen with a hint, and the caller continues with `wait_for_session` or `press_keys`. Errors are tool errors prefixed with the code (`NOT_FOUND`, `BUSY`, ...). Sessions keep running after the MCP server exits.
 

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { selfName } from "./identity.js";
 import { updateSaved } from "./saved.js";
 import { readStatus, writeStatus, type HookState, type Status } from "./status.js";
 
@@ -22,7 +23,7 @@ interface Payload {
 export function runHook(eventArg?: string): void {
   const isAgy = Boolean(eventArg);
   try {
-    const name = process.env.CLAMUX_NAME;
+    const name = selfName();
     if (!name) {
       if (isAgy) process.stdout.write("{}\n");
       return;

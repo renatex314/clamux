@@ -16,8 +16,13 @@ export const registryFile = (name: string) => path.join(RUN_DIR, `${name}.json`)
 export const configFile = (name: string) => path.join(RUN_DIR, `${name}.cfg`);
 export const screenFile = (name: string) => path.join(RUN_DIR, `${name}.screen`);
 export const errorFile = (name: string) => path.join(RUN_DIR, `${name}.err`);
+/** A running session's current name, by the id its host was started with (a session can be renamed while running). */
+export const idFile = (id: string) => path.join(RUN_DIR, "ids", id);
 
-/** Where a session host listens: a named pipe on Windows, a unix socket elsewhere. */
+/**
+ * Where a session host listens: a named pipe on Windows, a unix socket elsewhere. Keyed by the host's id rather
+ * than the session name, so renaming a running session leaves it where it is and frees the name.
+ */
 export function endpointFor(name: string): string {
   const id = crypto.createHash("sha1").update(HOME_DIR).digest("hex").slice(0, 8);
   if (process.platform === "win32") return `\\\\.\\pipe\\clamux-${id}-${name}`;

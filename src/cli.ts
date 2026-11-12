@@ -10,7 +10,7 @@ import { childEnv } from "./env.js";
 import { configFile, SETTINGS } from "./paths.js";
 import {
   accountEmail, accountMembers, addAccount, capturePane, cleanStale, createSession, defaultClaudeDir, forgetSession,
-  groupMembers, killSession, liveSessions, moveSession, readAccounts, readConfig, readGroups, removeAccount, removeGroup,
+  groupMembers, killSession, liveSessions, moveSession, readAccounts, readConfig, readGroups, removeAccount, removeGroup, renameSession,
   resumeSession, sendPrompt, setGroup, writeConfig, type Result,
 } from "./sessions.js";
 
@@ -25,6 +25,7 @@ const HELP = `clamux - manage multiple Claude Code and Antigravity CLI (agy) ses
   clamux kill <name>              stop it; it stays saved and can be resumed
   clamux resume <name> [-d]       restart a saved session, continuing its conversation
   clamux resume --all             restart every saved session that is not running
+  clamux rename <name> <new-name> rename a session (a running one keeps running)
   clamux forget <name>            delete a stopped session and its saved record
   clamux clean                    remove status files of sessions that are gone
   clamux group ls                 list groups and their defaults
@@ -325,6 +326,11 @@ async function main(): Promise<void> {
       console.log(`resumed '${name}'${res.resumed ? "" : " (fresh: no conversation recorded)"}`);
       if (!values.detach) must(await attachSession(name));
       return;
+    }
+    case "rename": {
+      if (!rest[0] || !rest[1]) die("usage: clamux rename <name> <new-name>");
+      must(await renameSession(rest[0], rest[1]));
+      return void console.log(`renamed '${rest[0]}' to '${rest[1]}'`);
     }
     case "forget": {
       if (!rest[0]) die("usage: clamux forget <name>");

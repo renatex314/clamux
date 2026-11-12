@@ -1,10 +1,12 @@
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import type net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { ErrorCode } from "./errors.js";
 import { childEnv } from "./env.js";
+import { selfName } from "./identity.js";
 import type { HostConfig } from "./host.js";
 import {
   defaultClaudeDir, newAccountDir, readAccounts, shareDefaults, writeAccounts, type Account,
@@ -13,7 +15,7 @@ import { readConfig } from "./config.js";
 import { readFolded, readGroups, writeFolded, writeGroups, type Group } from "./groups.js";
 import { connect, readMessages, send, type Msg } from "./ipc.js";
 import { keyToBytes } from "./keys.js";
-import { HOME_DIR, RUN_DIR, SETTINGS, configFile, errorFile, screenFile, selfPath } from "./paths.js";
+import { HOME_DIR, RUN_DIR, SAVED_DIR, SETTINGS, STATUS_DIR, configFile, errorFile, screenFile, selfPath } from "./paths.js";
 import { liveSessions, pidAlive, readRegistry, removeRunFiles } from "./registry.js";
 import { parseAgent, readSaved, removeSaved, savedNames, updateSaved, writeSaved, type Agent } from "./saved.js";
 import { readStatus, removeStatus, statusNames, writeStatus } from "./status.js";
@@ -142,8 +144,8 @@ export async function createSession(
   } catch (e) {
     return fail("INVALID", e instanceof Error ? e.message : String(e));
   }
-  const account = (opts.account ?? g.account) || null;
   const accounts = readAccounts();
+  const account = (opts.account ?? g.account ?? (agent === "claude" ? callerAccount(accounts) : undefined)) || null;
   if (account && !accounts[account]) return fail("NOT_FOUND", `no account '${account}' (clamux account ls)`);
   if (account && agent !== "claude") return fail("INVALID", "accounts are for Claude Code sessions; agy has its own login");
 
@@ -289,6 +291,17 @@ export function setGroup(
   return { ok: true };
 }
 
+/**
+ * The account of the clamux session this call comes from (an agent delegating through MCP, or a script it
+ * runs): CLAMUX_NAME is set by every session host and inherited by everything the agent starts. A session
+ * created from there runs under the same account unless told otherwise. Undefined outside a session.
+ */
+function callerAccount(accounts: Record<string, Account>): string | undefined {
+  const caller = selfName();
+  const acct = caller ? readSaved(caller)?.account : undefined;
+  return acct && accounts[acct] ? acct : undefined;
+}
+
 /** Deletes a group. Its sessions are not touched, except that they no longer belong to a group. */
 export function removeGroup(name: string): Result {
   const groups = readGroups();
@@ -390,7 +403,7 @@ async function startHost(
     windowsHide: true,
     cwd,
     // Claude Code keeps an account's login, state and conversations in its config directory.
-    env: childEnv({ CLAMUX_NAME: name, CLAMUX_NOTIFY: notify ? "1" : "0", ...(accountDir ? { CLAUDE_CONFIG_DIR: accountDir } : {}) }),
+    env: childEnv({ CLAMUX_NAME: name, CLAMUX_ID: crypto.randomBytes(6).toString("hex"), CLAMUX_NOTIFY: notify ? "1" : "0", ...(accountDir ? { CLAUDE_CONFIG_DIR: accountDir } : {}) }),
   });
   let hostExited = false;
   host.on("exit", () => (hostExited = true));
@@ -465,16 +478,92 @@ async function sendFrames(name: string, frames: Array<{ d: string; delayMs?: num
 /** A connection that types into the session as keys arrive, in order (one socket, not one per key). */
 export async function openInput(
   name: string,
-): Promise<{ ok: true; write: (d: string) => void; close: () => void } | Extract<Result, { ok: false }>> {
+): Promise<{ ok: true; write: (d: string) => void; paste: (d: string) => void; close: () => void } | Extract<Result, { ok: false }>> {
   const info = readRegistry(name);
   if (!info || !pidAlive(info.pid)) return fail("NOT_FOUND", `no live session '${name}'`) as Extract<Result, { ok: false }>;
   try {
     const sock = await connect(info.endpoint);
     sock.on("error", () => {}); // the session ending mid-way is reported by the dashboard's own polling
-    return { ok: true, write: (d) => { if (!sock.destroyed) send(sock, { t: "input", d }); }, close: () => sock.end() };
+    // Hosts from before 0.9 do not know "paste"; for them it is sent as a terminal would send it.
+    let canPaste = false;
+    readMessages(sock, (m) => { if (m.t === "pong") canPaste = m.paste === true; });
+    send(sock, { t: "ping" });
+    const write = (d: string) => { if (!sock.destroyed) send(sock, { t: "input", d }); };
+    return {
+      ok: true,
+      write,
+      paste: (d) => {
+        if (sock.destroyed) return;
+        if (canPaste) send(sock, { t: "paste", d });
+        else write(`\x1b[200~${d}\x1b[201~`);
+      },
+      close: () => sock.end(),
+    };
   } catch (e) {
     return fail("HOST_FAILED", e instanceof Error ? e.message : String(e)) as Extract<Result, { ok: false }>;
   }
+}
+
+/**
+ * Renames a session, running or not. A running one keeps running: its host moves its files to the new name, and
+ * its hooks find the new name through the id the host was started with. Hosts started before 0.9 have no id, so
+ * those have to be restarted (kill + resume) first.
+ */
+export async function renameSession(name: string, to: string): Promise<Result> {
+  if (!validName(to)) return fail("INVALID", "name: letters, digits, - and _ only (max 32 characters)");
+  if (to === name) return { ok: true };
+  const live = liveSessions();
+  if (!live.has(name) && !readSaved(name) && !readStatus(name)) return fail("NOT_FOUND", `no session '${name}'`);
+  if (live.has(to) || readSaved(to) || readStatus(to)) return fail("EXISTS", `a session named '${to}' already exists`);
+  if (live.has(name)) {
+    const info = readRegistry(name);
+    if (!info) return fail("NOT_FOUND", `no session '${name}'`);
+    let sock: net.Socket;
+    try {
+      sock = await connect(info.endpoint);
+    } catch (e) {
+      return fail("HOST_FAILED", e instanceof Error ? e.message : String(e));
+    }
+    try {
+      const reply = (t: string) => new Promise<Msg | null>((resolve) => {
+        const timer = setTimeout(() => resolve(null), 5000);
+        readMessages(sock, (m) => { if (m.t === t) { clearTimeout(timer); resolve(m); } });
+        sock.on("close", () => resolve(null));
+      });
+      sock.on("error", () => {});
+      const pong = reply("pong");
+      send(sock, { t: "ping" });
+      if ((await pong)?.rename !== true) {
+        return fail("INVALID", `'${name}' was started by an older clamux and cannot be renamed while running; kill it, rename it, then resume it`);
+      }
+      const done = reply("renamed");
+      send(sock, { t: "rename", to });
+      const r = await done;
+      if (!r) return fail("HOST_FAILED", `the session host did not confirm the rename`);
+      if (r.ok !== true) return fail("HOST_FAILED", String(r.error ?? "rename failed"));
+    } finally {
+      sock.destroy();
+    }
+  }
+  for (const dir of [STATUS_DIR, SAVED_DIR]) {
+    try {
+      fs.renameSync(path.join(dir, `${name}.json`), path.join(dir, `${to}.json`));
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") return fail("INVALID", e instanceof Error ? e.message : String(e));
+    }
+  }
+  return { ok: true };
+}
+
+/** Pastes text into the session (e.g. a file dropped on the dashboard) without submitting it. */
+export async function pasteInto(name: string, text: string): Promise<Result> {
+  const r = await openInput(name);
+  if (!r.ok) return r;
+  await new Promise((res) => setTimeout(res, 100)); // let the host answer the ping
+  r.paste(text);
+  await new Promise((res) => setTimeout(res, 50));
+  r.close();
+  return { ok: true };
 }
 
 /**

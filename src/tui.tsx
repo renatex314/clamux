@@ -1,12 +1,12 @@
 import type { EventEmitter } from "node:events";
 import { useEffect, useState } from "react";
-import { Box, Text, render, useApp, useInput, useStdin, useStdout } from "ink";
+import { Box, Text, render, useApp, useInput, usePaste, useStdin, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import { fmtAge, markSeen, snapshot, type DisplayState, type Row } from "./status.js";
-import { KEY_TOKEN, PREFIX, attachSession, keyOf } from "./attach.js";
+import { attachSession, createPrefixFilter } from "./attach.js";
 import { DirPicker } from "./dirpicker.js";
 import {
-  capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, moveSession, openInput, readAccounts, readFolded,
+  capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, moveSession, openInput, pasteInto, readAccounts, renameSession, readFolded,
   readGroups, removeGroup, writeFolded, resumeSession, sendPrompt, setGroup, validName, type Agent, type Group,
 } from "./sessions.js";
 
@@ -29,6 +29,7 @@ type Mode =
   | { kind: "move"; name: string; to: number }
   | { kind: "keys"; name: string }
   | { kind: "send"; name: string }
+  | { kind: "rename"; name: string }
   | { kind: "confirm"; question: string; run: () => void | Promise<void> };
 
 interface Action { attach: string }
@@ -143,7 +144,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
     if (!keysTo) return;
     if (!keyEvents) return toList("key passthrough is not supported by this Ink version");
     let closed = false;
-    let channel: { write: (d: string) => void; close: () => void } | undefined;
+    let channel: { write: (d: string) => void; paste: (d: string) => void; close: () => void } | undefined;
     const queued: string[] = [];
     void openInput(keysTo).then((r) => {
       if (!r.ok) return closed || toList(r.error);
@@ -152,22 +153,17 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
       for (const d of queued.splice(0)) r.write(d);
     });
     const write = (d: string) => { if (d) (channel ? channel.write(d) : queued.push(d)); };
-    let pending = false;
+    const filter = createPrefixFilter();
     const onInput = (data: string) => {
-      let out = "";
-      for (const tok of data.match(KEY_TOKEN) ?? []) {
-        const k = keyOf(tok);
-        if (pending) {
-          pending = false;
-          if (k === "d") { write(out); return toList(`stopped sending keys to '${keysTo}'`); }
-          out += k === "ctrl-b" ? tok : PREFIX + tok;
-        } else if (k === "ctrl-b") pending = true;
-        else out += tok;
-      }
+      const { out, detach } = filter(data);
       write(out);
+      if (detach) toList(`stopped sending keys to '${keysTo}'`);
     };
+    // Pasted text and dropped files arrive whole, and go in as a paste (not as typed keys, where a newline submits).
+    const onPaste = (text: string) => { if (channel) channel.paste(text); else queued.push(`\x1b[200~${text}\x1b[201~`); };
     keyEvents.on("input", onInput);
-    return () => { closed = true; keyEvents.off("input", onInput); channel?.close(); };
+    keyEvents.on("paste", onPaste);
+    return () => { closed = true; keyEvents.off("input", onInput); keyEvents.off("paste", onPaste); channel?.close(); };
   }, [keysTo]);
   useEffect(() => {
     if (keysTo && !rows.find((r) => r.name === keysTo)?.live) toList(`'${keysTo}' stopped`);
@@ -186,6 +182,19 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
     setNewAccount((ctxGroup && groups[ctxGroup]?.account) || null);
     setMode({ kind: "new-name", then, group: ctxGroup });
   };
+
+  // A paste or a file dropped on the window: into the prompt being typed, or straight into the selected session
+  // (as it would be if attached), so you can drop a file and then press i or Enter to go on typing.
+  // Bracketed paste is on while this is active, which is how a whole drop is told apart from typing.
+  usePaste((text) => {
+    if (mode.kind === "send" || mode.kind === "new-name" || mode.kind === "new-id" || mode.kind === "group-name") {
+      return setInput((v) => v + (mode.kind === "send" ? text : text.replace(/\s+/g, "")));
+    }
+    if (mode.kind !== "list" || !sel) return; // in "keys" mode the passthrough forwards it
+    if (!sel.live) return setMsg(`'${sel.name}' is not running - nothing pasted`);
+    const name = sel.name;
+    void pasteInto(name, text).then((r) => setMsg(r.ok ? `pasted into '${name}' - i to keep typing, Enter to attach` : r.error));
+  }, { isActive: mode.kind === "keys" || mode.kind === "list" || mode.kind === "send" || mode.kind === "new-name" || mode.kind === "new-id" || mode.kind === "group-name" });
 
   useInput((ch, key) => {
     if (mode.kind === "keys") return; // everything goes to the session
@@ -222,6 +231,9 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
       if (ch === "i" && sel) {
         if (!sel.live) return setMsg(`'${sel.name}' is not running`);
         setMsg(""); return setMode({ kind: "keys", name: sel.name });
+      }
+      if (ch === "," && sel) { // tmux's rename key
+        setMsg(""); setInput(sel.name); return setMode({ kind: "rename", name: sel.name });
       }
       if (ch === "s" && sel) {
         if (!sel.live) return setMsg(`'${sel.name}' is not running`);
@@ -320,6 +332,14 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
       if (groups[v]) return setMsg(`group '${v}' already exists - select it and press e to edit it`);
       setInput(""); setMsg("");
       return setMode({ kind: "group-dir", name: v });
+    }
+    if (mode.kind === "rename") {
+      if (!v || v === mode.name) return toList();
+      const from = mode.name;
+      const r = await renameSession(from, v);
+      if (r.ok) setSelName(v);
+      toList(r.ok ? `renamed '${from}' to '${v}'` : r.error);
+      return refresh();
     }
     if (mode.kind === "send") {
       if (!v) return toList();
@@ -463,7 +483,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
           <Text dimColor wrap="truncate-end">
             {selGroup
               ? "↑↓ select  ⏎ fold  n new session here  u new from id  e edit group  d delete group  g new group  q quit"
-              : "↑↓ select  ⏎ attach (Ctrl-b d: back)  i keys  n new  u new from id  r resume  s send  x kill  d delete  m move to group  g new group  c clean  q quit"}
+              : "↑↓ select  ⏎ attach (Ctrl-b d: back)  i keys  n new  u new from id  r resume  s send  , rename  x kill  d delete  m move to group  g new group  c clean  q quit"}
           </Text>
         )}
         {mode.kind === "group-dir" && (
@@ -493,11 +513,13 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
             ↑↓ move  ⏎/→ open  ⏎ on ✓ use it  ←/⌫ parent  type to filter  Tab agent  Esc cancel
           </Text>
         )}
-        {(mode.kind === "new-name" || mode.kind === "new-id" || mode.kind === "send" || mode.kind === "group-name") && (
+        {(mode.kind === "new-name" || mode.kind === "new-id" || mode.kind === "send" || mode.kind === "group-name" || mode.kind === "rename") && (
           <Box>
             <Text color="cyan">
               {mode.kind === "group-name"
                 ? "new group name: "
+                : mode.kind === "rename"
+                  ? `rename '${mode.name}' to: `
                 : mode.kind === "new-name"
                   ? `new ${newAgent} session${mode.group ? ` in '${mode.group}'` : ""}${accountTag}${mode.then === "id" ? ", continuing a conversation" : ""} - name (Tab: agent${accountKeys}): `
                   : mode.kind === "new-id"

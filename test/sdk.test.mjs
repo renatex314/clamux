@@ -140,6 +140,35 @@ describe("Clamux SDK", () => {
     assert.equal(cx.get("a").live, true);
   });
 
+  test("Ctrl-b d detaches whatever keyboard mode the app put the terminal in, and leaves the terminal clean", async () => {
+    // What a terminal sends once Claude Code has turned on the kitty keyboard protocol, modifyOtherKeys and
+    // mouse/focus reports. Each one detaches; they used to be ignored now and then.
+    const cases = [
+      ["kitty, with key releases, a mouse move and a focus event in between", ["\x1b[98;5u\x1b[98;5:3u\x1b[57442;1:3u\x1b[<35;10;5M\x1b[I", "d"]],
+      ["kitty, Caps Lock on", ["\x1b[98;69u\x1b[100;65u"]],
+      ["kitty, with alternate keys", ["\x1b[98::98;5u", "\x1b[100;1:1u"]],
+      ["modifyOtherKeys", ["\x1b[27;5;98~d"]],
+      ["a sequence split between two reads", ["\x1b[98;", "5ud"]],
+      ["Caps Lock on, legacy keys", ["\x02D"]],
+    ];
+    for (const [what, writes] of cases) {
+      const p = pty.spawn(process.execPath, [path.join(root, "dist/cli.js"), "attach", "a"], {
+        name: "xterm-256color", cols: 100, rows: 30, cwd: root, env: process.env,
+      });
+      let out = "";
+      let exitCode = null;
+      p.onData((d) => (out += d));
+      p.onExit((e) => (exitCode = e.exitCode));
+      for (let t = 0; t < 5000 && !/answer:/.test(out); t += 50) await sleep(50);
+      for (const w of writes) { p.write(w); await sleep(30); }
+      for (let t = 0; t < 3000 && exitCode === null; t += 50) await sleep(50);
+      if (exitCode === null) p.kill();
+      assert.equal(exitCode, 0, what);
+      assert.ok(out.includes("\x1b[=0;1u") && out.includes("\x1b[?1003l"), "turns the app's keyboard and mouse modes off");
+    }
+    assert.equal(cx.get("a").live, true);
+  });
+
   test("kill stops the session; operations report NOT_FOUND; the session stays saved and resumable", async () => {
     await cx.kill("a");
     assert.equal(throwsCode(() => cx.peek("a")), "NOT_FOUND");
@@ -410,6 +439,101 @@ describe("Clamux SDK", () => {
     cx.removeGroup("f1"); // leaves nothing behind
     assert.deepEqual(JSON.parse(fs.readFileSync(ui, "utf8")).folded, []);
     cx.removeGroup("f2");
+  });
+
+  test("rename: a running session keeps running under the new name, and its hooks follow it", async () => {
+    await cx.create("r1", { dir: tmp });
+    await cx.waitForIdle("r1", { timeoutMs: 8000 });
+    await cx.create("r9", { dir: tmp });
+    assert.equal(await code(cx.rename("r1", "r9")), "EXISTS");
+    assert.equal(await code(cx.rename("r1", "bad name")), "INVALID");
+    assert.equal(await code(cx.rename("nope", "r5")), "NOT_FOUND");
+
+    const s = await cx.rename("r1", "r2");
+    assert.equal(s.name, "r2");
+    assert.equal(s.live, true);
+    assert.equal(cx.get("r1"), undefined);
+    assert.match(await cx.screen("r2"), /ready/);
+    // The agent still runs with CLAMUX_NAME=r1; its hooks must report to r2.
+    const r = await cx.ask("r2", "after rename", { timeoutMs: 8000 });
+    assert.equal(r.answer, "answer: after rename");
+    assert.equal(cx.get("r1"), undefined);
+    assert.equal(fs.existsSync(path.join(tmp, ".clamux/status/r1.json")), false);
+
+    // The old name is free again, even while r2 runs.
+    await cx.create("r1", { dir: tmp });
+    await cx.waitForIdle("r1", { timeoutMs: 8000 });
+    assert.equal((await cx.ask("r2", "still me", { timeoutMs: 8000 })).answer, "answer: still me");
+
+    // A stopped session is renamed too, and resumes under its new name.
+    await cx.kill("r2");
+    await cx.rename("r2", "r3");
+    assert.equal(cx.get("r3").resumable, true);
+    assert.equal((await cx.resume("r3")).resumed, true);
+    for (const n of ["r1", "r3", "r9"]) { await cx.kill(n); cx.forget(n); }
+  });
+
+  test("a session created from inside another one runs under the caller's account unless told otherwise", async () => {
+    cx.addAccount("inh");
+    await cx.create("ia", { dir: tmp, account: "inh" });
+    process.env.CLAMUX_NAME = "ia"; // as the agent in 'ia' (or a script it runs) would be
+    try {
+      assert.equal((await cx.create("ib", { dir: tmp })).account, "inh");
+      assert.equal((await cx.create("ic", { dir: tmp, account: "" })).account, null); // "" = the default login
+      cx.setGroup("gacct", { dir: tmp });
+      assert.equal((await cx.create("id", { group: "gacct" })).account, "inh");
+    } finally {
+      delete process.env.CLAMUX_NAME;
+    }
+    assert.equal((await cx.create("ie", { dir: tmp })).account, null); // outside a session: the default
+    await cx.waitForIdle("ib", { timeoutMs: 8000 });
+    assert.match(await cx.screen("ib"), new RegExp(`config=.*accounts[\\\\/]inh`));
+    for (const n of ["ia", "ib", "ic", "id", "ie"]) { await cx.kill(n); cx.forget(n); }
+    cx.removeGroup("gacct");
+    cx.removeAccount("inh");
+  });
+
+  test("the dashboard pastes a dropped file into the selected session, and into it in key passthrough", { skip: process.platform === "win32" }, async () => {
+    process.env.FAKE_BRACKETED = "1";
+    try {
+      await cx.create("0p", { dir: tmp }); // sorts first, so the dashboard selects it
+    } finally {
+      delete process.env.FAKE_BRACKETED;
+    }
+    await cx.waitForIdle("0p", { timeoutMs: 8000 });
+    const p = pty.spawn(process.execPath, [path.join(root, "dist/cli.js")], { cols: 120, rows: 30, cwd: tmp, env: process.env });
+    let out = "";
+    let exited = false;
+    p.onData((d) => { out += d; });
+    p.onExit(() => { exited = true; });
+    try {
+    for (let t = 0; t < 5000 && !/0p/.test(out); t += 50) await sleep(50);
+    await sleep(300);
+    const dropped = "/Users/me/Pictures/screen shot.png";
+    p.write(`\x1b[200~${dropped}\x1b[201~`); // what a terminal sends for a dropped file
+    for (let t = 0; t < 5000 && !(await cx.screen("0p")).includes(`[pasted ${dropped.length} chars]`); t += 100) await sleep(100);
+    assert.match(await cx.screen("0p"), new RegExp(`\\[pasted ${dropped.length} chars\\]`));
+    for (let t = 0; t < 3000 && !/pasted into '0p'/.test(out); t += 50) await sleep(50);
+    assert.match(out, /pasted into '0p'/);
+    assert.equal(cx.get("0p").state, "idle"); // pasted, not submitted
+
+    p.write("i"); // key passthrough: a paste goes in whole, as a paste
+    await sleep(500);
+    p.write("\x1b[200~line one\nline two\x1b[201~");
+    // Not submitted in between, so the fake app counts both pastes together.
+    const both = `[pasted ${dropped.length + 17} chars]`;
+    for (let t = 0; t < 5000 && !(await cx.screen("0p")).includes(both); t += 100) await sleep(100);
+    assert.ok((await cx.screen("0p")).includes(both));
+    assert.equal(cx.get("0p").state, "idle");
+    p.write("\x02d");
+    await sleep(300);
+    p.write("q");
+    for (let t = 0; t < 3000 && !exited; t += 50) await sleep(50);
+    assert.equal(exited, true);
+    } finally {
+      if (!exited) p.kill();
+      await cx.kill("0p").catch(() => {}); cx.forget("0p");
+    }
   });
 
   test("groups give new sessions their defaults, and sessions can move between groups", async () => {

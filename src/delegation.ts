@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { HOME_DIR } from "./paths.js";
 import { pidAlive } from "./registry.js";
+import { selfName } from "./identity.js";
 
 /**
  * A session that is waiting on another one: its agent called `ask` / `wait_for_session` (MCP or SDK) on a
@@ -28,7 +29,7 @@ let seq = 0;
 
 /** Runs `fn` with the current session (if any) recorded as waiting on `to`. */
 export async function delegating<T>(to: string, timeoutMs: number | undefined, fn: () => Promise<T>): Promise<T> {
-  const from = process.env.CLAMUX_NAME;
+  const from = selfName();
   if (!from || from === to) return fn();
   const file = path.join(DELEGATIONS_DIR, `${process.pid}-${++seq}.json`);
   const now = Date.now();

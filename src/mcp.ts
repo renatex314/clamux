@@ -82,7 +82,7 @@ export async function runMcp(): Promise<void> {
       claude_args: z.array(z.string()).optional().describe('Extra arguments for the agent CLI, e.g. ["--model", "opus"]'),
       notify: z.boolean().optional().describe("Desktop notification when the session finishes or needs input (default: the group's, else false)"),
       group: z.string().optional().describe("Put the session in this group (see list_groups); the group's defaults fill in dir, agent, claude_args, notify and account when they are left out"),
-      account: z.string().optional().describe("Run Claude Code under this account (see list_accounts) instead of the default login"),
+      account: z.string().optional().describe("Run Claude Code under this account (see list_accounts). Default: the group's, else the account the calling session runs under, else the default login. Pass \"\" for the default login"),
     },
   }, ({ name: n, dir, agent, session_id, claude_args, notify, group, account }) => run(async () => {
     const created = await cx.create(n, { dir, agent, sessionId: session_id, claudeArgs: claude_args, notify, group, account });
@@ -170,6 +170,15 @@ export async function runMcp(): Promise<void> {
   }, ({ name: n }) => run(async () => {
     const r = await cx.resume(n);
     return text(`Resumed '${n}'${r.resumed ? "" : " (fresh: no conversation had been recorded)"}.`);
+  }));
+
+  server.registerTool("rename_session", {
+    title: "Rename a session",
+    description: "Give a session a new name. A running session keeps running (and keeps its conversation); fails with EXISTS if the name is taken.",
+    inputSchema: { name, new_name: z.string().describe("Letters, digits, - and _ only (max 32 characters)") },
+  }, ({ name: n, new_name }) => run(async () => {
+    await cx.rename(n, new_name);
+    return text(`Renamed '${n}' to '${new_name}'.`);
   }));
 
   server.registerTool("kill_session", {
