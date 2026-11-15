@@ -150,6 +150,8 @@ describe("Clamux SDK", () => {
       ["modifyOtherKeys", ["\x1b[27;5;98~d"]],
       ["a sequence split between two reads", ["\x1b[98;", "5ud"]],
       ["Caps Lock on, legacy keys", ["\x02D"]],
+      // Windows Terminal in win32-input-mode: Ctrl down, B down (char 2), B up, Ctrl up, D down (char 100), D up
+      ["win32-input-mode", ["\x1b[17;29;0;1;8;1_\x1b[66;48;2;1;8;1_\x1b[66;48;2;0;8;1_\x1b[17;29;0;0;0;1_", "\x1b[68;32;100;1;0;1_\x1b[68;32;100;0;0;1_"]],
     ];
     for (const [what, writes] of cases) {
       const p = pty.spawn(process.execPath, [path.join(root, "dist/cli.js"), "attach", "a"], {
@@ -167,6 +169,34 @@ describe("Clamux SDK", () => {
       assert.ok(out.includes("\x1b[=0;1u") && out.includes("\x1b[?1003l"), "turns the app's keyboard and mouse modes off");
     }
     assert.equal(cx.get("a").live, true);
+  });
+
+  test("attach does not pass Windows' win32-input-mode request on to the terminal", async () => {
+    process.env.FAKE_WIN32_INPUT = "1";
+    try {
+      await cx.create("w32", { dir: tmp });
+    } finally {
+      delete process.env.FAKE_WIN32_INPUT;
+    }
+    await cx.waitForIdle("w32", { timeoutMs: 8000 });
+    const p = pty.spawn(process.execPath, [path.join(root, "dist/cli.js"), "attach", "w32"], {
+      name: "xterm-256color", cols: 100, rows: 30, cwd: root, env: process.env,
+    });
+    let out = "";
+    let exitCode = null;
+    p.onData((d) => (out += d));
+    p.onExit((e) => (exitCode = e.exitCode));
+    for (let t = 0; t < 5000 && !/ready/.test(out); t += 50) await sleep(50);
+    p.write("renderer switch\r");
+    for (let t = 0; t < 5000 && !/answer: renderer switch/.test(out); t += 50) await sleep(50);
+    assert.match(out, /answer: renderer switch/);
+    assert.ok(!out.includes("\x1b[?9001h"), "the request was dropped");
+    assert.ok(!out.includes("\x1b[?90") || !/\x1b\[\?90(?!01l)/.test(out), "not even half of it");
+    p.write("\x02d");
+    for (let t = 0; t < 3000 && exitCode === null; t += 50) await sleep(50);
+    if (exitCode === null) p.kill();
+    assert.equal(exitCode, 0);
+    await cx.kill("w32"); cx.forget("w32");
   });
 
   test("kill stops the session; operations report NOT_FOUND; the session stays saved and resumable", async () => {

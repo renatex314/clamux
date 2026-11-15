@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { connect, readMessages, send } from "./ipc.js";
 import { pidAlive, readRegistry } from "./registry.js";
 import { fail, type Result } from "./sessions.js";
@@ -13,7 +14,33 @@ const ALT_SCREEN_ON = "\x1b[?1049h";
 const RESTORE_TERMINAL =
   "\x1b[?1049l\x1b[?25h" + // main screen, cursor visible
   "\x1b[=0;1u\x1b[>4;0m" + // kitty keyboard flags off, modifyOtherKeys off
-  "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l"; // mouse, focus, paste, theme reports
+  "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?2031l" + // mouse, focus, paste, theme reports
+  "\x1b[?9001l"; // Windows Terminal's win32-input-mode
+
+/**
+ * Windows' ConPTY asks its terminal for win32-input-mode whenever the app under it reconfigures console input
+ * (Claude Code does on every renderer switch, e.g. `/tui default`). Passed on, it makes Windows Terminal send every
+ * key as a `CSI Vk;Sc;Uc;Kd;Cs;Rc _` record, for key down and up. The session host's ConPTY reads plain VT input
+ * just as well, so the request is dropped on the way to the real terminal.
+ */
+const WIN32_INPUT_ON = "\x1b[?9001h";
+
+/** Removes the win32-input-mode request from output, also when it is split between two writes. */
+export function createOutputFilter(): (d: string) => string {
+  let carry = "";
+  return (d) => {
+    let data = (carry + d).split(WIN32_INPUT_ON).join("");
+    carry = "";
+    for (let n = Math.min(WIN32_INPUT_ON.length - 1, data.length); n >= 2; n--) {
+      if (data.endsWith(WIN32_INPUT_ON.slice(0, n))) {
+        carry = data.slice(-n);
+        data = data.slice(0, -n);
+        break;
+      }
+    }
+    return data;
+  };
+}
 
 /**
  * Splits terminal input into keys and whole control sequences. Claude Code switches the terminal into an
@@ -37,6 +64,15 @@ export function keyKind(tok: string): KeyKind {
   if (tok === "d" || tok === "D") return "d"; // D: Caps Lock on
   if (/^\x1b\[[<?>=]/u.test(tok) || /^\x1b\[[IO]$/u.test(tok) || /^\x1b\]/u.test(tok) || /^\x1b\[\d+;\d+R$/u.test(tok)) {
     return "neutral"; // mouse (SGR), terminal replies, focus in/out, OSC replies, cursor position
+  }
+  // Windows Terminal's win32-input-mode: CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _ (Kd: 1 down, 0 up; Uc: the character)
+  const win = /^\x1b\[(\d*);(\d*);(\d*);(\d*);(\d*);(\d*)_$/u.exec(tok);
+  if (win) {
+    const vk = Number(win[1] || 0), uc = Number(win[3] || 0), down = win[4] === "1";
+    if (!down || vk === 16 || vk === 17 || vk === 18 || vk === 20 || vk === 91 || vk === 92) return "neutral"; // key up, Shift/Ctrl/Alt/Caps/Win alone
+    if (uc === 2) return "ctrl-b";
+    if (uc === 100 || uc === 68) return "d";
+    return "other";
   }
   let code: number, mods: number;
   // kitty: CSI code[:shifted[:base]] ; mods[:event] [; text] u
@@ -124,7 +160,23 @@ export async function attachSession(name: string): Promise<Result> {
     const onResize = () => send(s, { t: "resize", cols: stdout.columns, rows: stdout.rows });
 
     const filter = createPrefixFilter();
+    // CLAMUX_DEBUG_KEYS=<file>: records what the terminal sends and the keyboard/screen modes the app asks it for,
+    // to diagnose keys the prefix does not catch in a particular terminal.
+    const debugFile = process.env.CLAMUX_DEBUG_KEYS;
+    const debug = (what: string, data: string) => {
+      if (!debugFile) return;
+      try {
+        fs.appendFileSync(debugFile, `${new Date().toISOString()} ${what} ${JSON.stringify(data)}\n`);
+      } catch {
+        // diagnostics only
+      }
+    };
+    const MODES = /\x1b\[[<>=?][0-9;:]*[a-zA-Z]|\x1b\[\?[0-9;]*[hl]/gu;
     const onKey = (chunk: string) => {
+      if (debugFile) {
+        const kinds = (chunk.match(TOKEN) ?? []).map((t) => keyKind(t)).filter((k) => k !== "other");
+        debug("in", chunk + (kinds.length ? ` [${kinds.join(" ")}]` : ""));
+      }
       const { out, detach } = filter(chunk);
       if (out) send(s, { t: "input", d: out });
       if (detach) {
@@ -133,14 +185,19 @@ export async function attachSession(name: string): Promise<Result> {
       }
     };
 
+    const outFilter = createOutputFilter();
     readMessages(s, (m) => {
-      if (m.t === "snapshot" || m.t === "out") stdout.write(String(m.d ?? ""));
+      if (m.t === "snapshot" || m.t === "out") {
+        const raw = String(m.d ?? "");
+        if (debugFile) for (const mode of raw.match(MODES) ?? []) debug(m.t === "out" ? "mode" : "snapshot-mode", mode);
+        stdout.write(outFilter(raw));
+      }
       else if (m.t === "exit") finish();
     });
     s.on("close", finish);
     s.on("error", finish);
 
-    stdout.write(ALT_SCREEN_ON);
+    stdout.write(ALT_SCREEN_ON + "\x1b[?9001l"); // plain keys, even if an earlier client left win32-input-mode on
     stdin.setRawMode(true);
     stdin.setEncoding("utf8");
     stdin.resume();

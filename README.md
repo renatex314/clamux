@@ -115,7 +115,7 @@ A new account shares your default one's `settings.json`, `CLAUDE.md`, skills, ag
 |---|---|
 | `clamux new <name> [dir] [-g <group>] [-A <account>] [-a claude\|agy] [-s <session id>] [-d] [--notify\|--no-notify] [-- <agent args>]` | start a session (and attach, unless `-d`) |
 | `clamux ls` | every session with its group, agent, state and directory |
-| `clamux attach <name>` | connect your terminal to it; `Ctrl-b d` detaches (also with Caps Lock on, and in the keyboard modes Claude Code turns on), and the terminal is left as it was |
+| `clamux attach <name>` | connect your terminal to it; `Ctrl-b d` detaches (also with Caps Lock on, and in the keyboard modes Claude Code and Windows Terminal turn on), and the terminal is left as it was. `CLAMUX_DEBUG_KEYS=<file>` logs what the terminal sends, if a key is still missed |
 | `clamux send <name> <prompt...> [--force]` | type a prompt into it (refuses if it is busy, unless `--force`) |
 | `clamux peek <name>` | print its screen |
 | `clamux kill <name>` | stop it; it stays saved and can be resumed |

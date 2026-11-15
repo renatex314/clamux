@@ -65,6 +65,9 @@ for await (const line of prompts) {
   log("assistant", [{ type: "text", text: "thinking out loud" }, { type: "tool_use", name: "Bash" }]);
   log("user", [{ type: "tool_result", content: "ok" }]);
   await sleep(Number(process.env.FAKE_WORK_MS ?? 1000));
+  // FAKE_WIN32_INPUT=1: like ConPTY when the app reconfigures input, ask the terminal for win32-input-mode
+  // (split in two writes, as can happen).
+  if (process.env.FAKE_WIN32_INPUT === "1") { process.stdout.write("\x1b[?90"); await sleep(20); process.stdout.write("01h"); }
   console.log("answer: " + line);
   log("assistant", [{ type: "thinking", thinking: "" }]);
   log("assistant", [{ type: "text", text: "answer: " + line }]);
