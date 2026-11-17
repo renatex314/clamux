@@ -173,6 +173,9 @@ resource "aws_instance" "ec2_instance_clamux" {
   lifecycle {
     ignore_changes = [ami]
   }
+  credit_specification {
+    cpu_credits = "standard"
+  }
 }
 
 resource "aws_eip" "ec2_eip_clamux" {
