@@ -146,3 +146,48 @@ resource "aws_iam_instance_profile" "ec2_iam_instance_profile_clamux" {
   name = "ec2_iam_instance_profile_clamux"
   role = aws_iam_role.ec2_ssm_iam_role_clamux.name
 }
+
+data "aws_ssm_parameter" "ec2_ssm_parameter_ubuntu_ami_clamux" {
+  name = "/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id"
+}
+
+resource "aws_instance" "ec2_instance_clamux" {
+  ami                    = data.aws_ssm_parameter.ec2_ssm_parameter_ubuntu_ami_clamux.insecure_value
+  instance_type          = "t4g.small"
+  subnet_id              = aws_subnet.vpc_subnet_primary_clamux.id
+  vpc_security_group_ids = [aws_security_group.security_group_allow_http_tls_clamux.id]
+  iam_instance_profile   = aws_iam_instance_profile.ec2_iam_instance_profile_clamux.name
+  metadata_options {
+    http_tokens                 = "required"
+    http_endpoint               = "enabled"
+    http_put_response_hop_limit = 1
+  }
+  root_block_device {
+    volume_size = 30
+    volume_type = "gp3"
+    encrypted   = true
+  }
+  tags = {
+    Name = "ec2_instance_clamux"
+  }
+  lifecycle {
+    ignore_changes = [ami]
+  }
+}
+
+resource "aws_eip" "ec2_eip_clamux" {
+  domain   = "vpc"
+  instance = aws_instance.ec2_instance_clamux.id
+  tags = {
+    Name = "ec2_eip_clamux"
+  }
+  depends_on = [aws_internet_gateway.vpc_gateway_clamux]
+}
+
+output "ec2_public_ip_address" {
+  value = aws_eip.ec2_eip_clamux.public_ip
+}
+
+output "ec2_instance_id" {
+  value = aws_instance.ec2_instance_clamux.id
+}
