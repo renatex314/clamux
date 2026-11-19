@@ -63,6 +63,7 @@ Requires Node 20+ and the `claude` CLI (or `agy`) on your PATH. For the SDK, add
 | `i` | send keys: every key (`Esc`, `Ctrl-c`, arrows...) goes to the selected session while the dashboard stays on screen; `Ctrl-b` then `d` stops, `Ctrl-b` `Ctrl-b` sends a literal `Ctrl-b` |
 | `s` | type a prompt into the selected session (asks first if it is busy) |
 | `,` | rename the selected session; a running one keeps running |
+| `C` | clone the selected session: a new session that starts with its conversation and then goes its own way (asks for a name; `Enter` takes `<name>-clone`) |
 | paste / drop a file | goes into the selected session as a paste, without submitting it (then `i` or `Enter` to keep typing), the same as when attached |
 | `r` | resume the selected session if it is not running |
 | `x` | kill the selected session (it stays saved, so `r` brings it back) |
@@ -120,6 +121,7 @@ A new account shares your default one's `settings.json`, `CLAUDE.md`, skills, ag
 | `clamux peek <name>` | print its screen |
 | `clamux kill <name>` | stop it; it stays saved and can be resumed |
 | `clamux resume <name> [-d]` / `resume --all` | restart a saved session (or all of them), continuing its conversation |
+| `clamux clone <name> [new-name] [-g <group>\|--no-group] [-A <account>\|--no-account] [-d]` | start a session with `<name>`'s conversation so far, which then goes its own way (`claude --resume --fork-session`); it takes the source's folder, arguments, group and account. The source keeps running, untouched. agy sessions cannot be cloned |
 | `clamux rename <name> <new-name>` | rename a session; a running one keeps running |
 | `clamux forget <name>` | delete a stopped session and its saved record |
 | `clamux group ls\|set\|rm\|move` | manage [groups](#groups) |
@@ -169,6 +171,7 @@ for await (const change of cx.watch()) {                // every state change, u
 | `watch({ pollMs, signal })` | async iterator of `{ name, from, to, session }` |
 | `kill(name)` | stop a session; it stays saved (`resumable: true`) |
 | `resume(name)` | restart a saved session and continue its conversation; returns `{ session, resumed }` |
+| `clone(name, to?, { group, account })` | fork the session's conversation into a new session (`to` defaults to `<name>-clone`); resolves to `{ session, forked }`, where `forked` is false if there was no conversation yet |
 | `rename(name, to)` | rename a session, running or not (`EXISTS` if the name is taken) |
 | `forget(name)` | delete a stopped session and its saved record (`BUSY` if it is running) |
 | `attach` / `clean` | as in the CLI (`attach` is async) |
@@ -219,6 +222,7 @@ Other clients: `{ "mcpServers": { "clamux": { "command": "npx", "args": ["-y", "
 | `read_screen` / `press_keys` | see the terminal and send keystrokes, e.g. to answer a permission prompt |
 | `kill_session` / `resume_session` / `forget_session` | stop (stays saved), continue the conversation later, delete for good |
 | `rename_session` | give a session a new name; a running one keeps running |
+| `clone_session` | start a copy of a session (yourself included) with its conversation so far, to split work or try something without touching the original |
 
 Long waits don't fail: if a session is still working at the timeout, or stops on a permission prompt or the first-time folder-trust prompt, the tool returns its state and screen with a hint, and the caller continues with `wait_for_session` or `press_keys`. Errors are tool errors prefixed with the code (`NOT_FOUND`, `BUSY`, ...). Sessions keep running after the MCP server exits.
 

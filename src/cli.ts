@@ -10,7 +10,7 @@ import { childEnv } from "./env.js";
 import { configFile, SETTINGS } from "./paths.js";
 import {
   accountEmail, accountMembers, addAccount, capturePane, cleanStale, createSession, defaultClaudeDir, forgetSession,
-  groupMembers, killSession, liveSessions, moveSession, readAccounts, readConfig, readGroups, removeAccount, removeGroup, renameSession,
+  groupMembers, cloneSession, killSession, liveSessions, moveSession, readAccounts, readConfig, readGroups, removeAccount, removeGroup, renameSession,
   resumeSession, sendPrompt, setGroup, writeConfig, type Result,
 } from "./sessions.js";
 
@@ -25,6 +25,8 @@ const HELP = `clamux - manage multiple Claude Code and Antigravity CLI (agy) ses
   clamux kill <name>              stop it; it stays saved and can be resumed
   clamux resume <name> [-d]       restart a saved session, continuing its conversation
   clamux resume --all             restart every saved session that is not running
+  clamux clone <name> [new-name] [-g <group>|--no-group] [-A <account>|--no-account] [-d]
+                                  a new session that starts with <name>'s conversation and goes its own way
   clamux rename <name> <new-name> rename a session (a running one keeps running)
   clamux forget <name>            delete a stopped session and its saved record
   clamux clean                    remove status files of sessions that are gone
@@ -276,6 +278,29 @@ async function main(): Promise<void> {
       }));
       console.log(`started '${name}'`);
       if (!values.detach) must(await attachSession(name));
+      return;
+    }
+    case "clone": {
+      const { values, positionals } = parseArgs({
+        args: rest,
+        allowPositionals: true,
+        options: {
+          group: { type: "string", short: "g" },
+          "no-group": { type: "boolean" },
+          account: { type: "string", short: "A" },
+          "no-account": { type: "boolean" },
+          detach: { type: "boolean", short: "d" },
+        },
+      });
+      const [name, to] = positionals;
+      if (!name) die("usage: clamux clone <name> [new-name] [-g <group>|--no-group] [-A <account>|--no-account] [-d]");
+      const r = await cloneSession(name, to, {
+        group: values["no-group"] ? null : values.group,
+        account: values["no-account"] ? "" : values.account,
+      });
+      if (!r.ok) die(r.error);
+      console.log(r.forked ? `cloned '${name}' as '${r.name}'` : `'${name}' had no conversation yet; started '${r.name}' fresh with its settings`);
+      if (!values.detach) must(await attachSession(r.name));
       return;
     }
     case "attach": {

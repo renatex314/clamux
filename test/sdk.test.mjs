@@ -566,6 +566,115 @@ describe("Clamux SDK", () => {
     }
   });
 
+  test("clone forks a session's conversation into a new one, inheriting its settings", async () => {
+    cx.setGroup("cg", { dir: tmp });
+    cx.addAccount("cacct");
+    await cx.create("co", { group: "cg", account: "cacct", claudeArgs: ["--model", "opus"] });
+    await cx.waitForIdle("co", { timeoutMs: 8000 });
+    assert.equal(await code(cx.clone("co")), "no error"); // never prompted, so...
+    assert.equal(cx.get("co-clone").live, true);
+    await cx.kill("co-clone"); cx.forget("co-clone");
+
+    await cx.ask("co", "remember this", { timeoutMs: 8000 });
+    const before = cx.get("co").state;
+    const { session, forked } = await cx.clone("co");
+    assert.equal(forked, true);
+    assert.equal(session.name, "co-clone");
+    assert.equal(cx.get("co").state, before); // the source is left alone
+    await cx.waitForIdle("co-clone", { timeoutMs: 8000 });
+    assert.match(await cx.screen("co-clone"), /ready args=--settings \S+ --model opus --resume fake-1 --fork-session/);
+    const c = cx.get("co-clone");
+    assert.equal(c.group, "cg");
+    assert.equal(c.account, "cacct");
+    assert.equal(c.cwd, cx.get("co").cwd);
+    const saved = (n) => JSON.parse(fs.readFileSync(path.join(tmp, ".clamux/saved", `${n}.json`), "utf8"));
+    assert.match(saved("co-clone").sessionId, /^fake-fork-/); // its own conversation from the start
+    assert.equal(saved("co").sessionId, "fake-1");
+
+    // Numbered default names, overrides, and errors.
+    const second = await cx.clone("co", undefined, { group: null, account: "" });
+    assert.equal(second.session.name, "co-clone-2");
+    assert.equal(second.session.group, null);
+    assert.equal(second.session.account, null);
+    assert.equal(await code(cx.clone("co", "co-clone")), "EXISTS");
+    assert.equal(await code(cx.clone("nope")), "NOT_FOUND");
+    assert.equal(await code(cx.clone("co", "x", { group: "nope" })), "NOT_FOUND");
+    await cx.kill("co"); // a stopped source can be cloned too
+    assert.equal((await cx.clone("co", "co-from-stopped")).forked, true);
+    for (const n of ["co", "co-clone", "co-clone-2", "co-from-stopped"]) { await cx.kill(n).catch(() => {}); cx.forget(n); }
+    cx.removeGroup("cg");
+    cx.removeAccount("cacct");
+  });
+
+  test("the dashboard list stays one line per session, scrolled to the selection, with many old sessions", { skip: process.platform === "win32" }, async () => {
+    const { Terminal } = (await import("@xterm/headless")).default;
+    const now = Date.now() / 1000;
+    const names = Array.from({ length: 40 }, (_, i) => `old${String(i).padStart(2, "0")}`);
+    for (const [i, n] of names.entries()) {
+      fs.writeFileSync(path.join(tmp, ".clamux/saved", `${n}.json`), JSON.stringify({ cwd: tmp, agent: "claude", claudeArgs: [], notify: false, sessionId: null, transcriptPath: null, savedAt: 0 }));
+      fs.writeFileSync(path.join(tmp, ".clamux/status", `${n}.json`), JSON.stringify({ state: "ended", since: now - i * 40 * 86400 / 3, updated: now }));
+    }
+    try {
+      const term = new Terminal({ cols: 90, rows: 20, allowProposedApi: true });
+      const p = pty.spawn(process.execPath, [path.join(root, "dist/cli.js")], { cols: 90, rows: 20, cwd: tmp, env: process.env });
+      p.onData((d) => term.write(d));
+      await sleep(1500);
+      for (let i = 0; i < 30; i++) { p.write("\x1b[B"); await sleep(30); }
+      await sleep(800);
+      const b = term.buffer.active;
+      const lines = Array.from({ length: 20 }, (_, i) => b.getLine(b.baseY + i)?.translateToString(true) ?? "");
+      p.write("q");
+      await sleep(300);
+      p.kill();
+      // 20 rows: header, top border, 14 list lines, bottom border, help, message.
+      const list = lines.slice(2, 16).map((l) => `${l.split("││")[0]}│`);
+      for (const l of list) assert.match(l, /^│ [ ▸]● \S+ +\S+ +\S+ +│$/, `one session per line:\n${lines.join("\n")}`);
+      assert.equal(list.filter((l) => l.includes("▸●")).length, 1, `the selection is in view:\n${lines.join("\n")}`);
+      assert.match(lines[16], /^╰/);
+      assert.match(lines[15], /old\d\d/); // scrolled: not the first sessions any more
+      assert.ok(!list.some((l) => /old0[0-5]/.test(l)), `scrolled to the selection:\n${lines.join("\n")}`);
+    } finally {
+      for (const n of names) { fs.rmSync(path.join(tmp, ".clamux/saved", `${n}.json`)); fs.rmSync(path.join(tmp, ".clamux/status", `${n}.json`)); }
+    }
+  });
+
+  test("deleting the selected session keeps the selection at the same place in the list", { skip: process.platform === "win32" }, async () => {
+    const { Terminal } = (await import("@xterm/headless")).default;
+    const names = ["zz1", "zz2", "zz3", "zz4", "zz5"]; // sorted last, after any other test's sessions
+    for (const n of names) {
+      fs.writeFileSync(path.join(tmp, ".clamux/saved", `${n}.json`), JSON.stringify({ cwd: tmp, agent: "claude", claudeArgs: [], notify: false, sessionId: null, transcriptPath: null, savedAt: 0 }));
+    }
+    const term = new Terminal({ cols: 100, rows: 30, allowProposedApi: true });
+    const p = pty.spawn(process.execPath, [path.join(root, "dist/cli.js")], { cols: 100, rows: 30, cwd: tmp, env: process.env });
+    p.onData((d) => term.write(d));
+    const selected = () => {
+      const b = term.buffer.active;
+      for (let i = 0; i < 30; i++) {
+        const m = /▸● (\S+)/.exec(b.getLine(b.baseY + i)?.translateToString(true) ?? "");
+        if (m) return m[1];
+      }
+      return null;
+    };
+    const until = async (name) => {
+      for (let t = 0; t < 4000 && selected() !== name; t += 50) await sleep(50);
+      assert.equal(selected(), name);
+    };
+    try {
+      await sleep(1500);
+      p.write("\x1b[A"); await until("zz5"); // up from the first line wraps to the last
+      p.write("\x1b[A"); await until("zz4");
+      p.write("d"); await sleep(300); p.write("y");
+      await until("zz5"); // the session below took its place
+      p.write("d"); await sleep(300); p.write("y");
+      await until("zz3"); // the last one went: the one before it
+    } finally {
+      p.write("q");
+      await sleep(300);
+      p.kill();
+      for (const n of names) fs.rmSync(path.join(tmp, ".clamux/saved", `${n}.json`), { force: true });
+    }
+  });
+
   test("groups give new sessions their defaults, and sessions can move between groups", async () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(tmp, "grp-")));
     assert.equal(throwsCode(() => cx.setGroup("bad name!")), "INVALID");

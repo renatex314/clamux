@@ -172,6 +172,22 @@ export async function runMcp(): Promise<void> {
     return text(`Resumed '${n}'${r.resumed ? "" : " (fresh: no conversation had been recorded)"}.`);
   }));
 
+  server.registerTool("clone_session", {
+    title: "Clone a session",
+    description: "Start a new session that begins with everything another session's conversation holds so far (e.g. yourself, to split work, or before trying something risky) and then goes its own way: neither sees the other's later messages, and the source is not interrupted. It takes the source's dir, agent, args, group and account. Not for agy sessions.",
+    inputSchema: {
+      name,
+      new_name: z.string().optional().describe("Name for the clone (default: <name>-clone)"),
+      group: z.string().optional().describe("Group for the clone (default: the source's; \"\" for none)"),
+      account: z.string().optional().describe("Claude account for the clone (default: the source's; \"\" for the default login)"),
+    },
+  }, ({ name: n, new_name, group, account }) => run(async () => {
+    const { session, forked } = await cx.clone(n, new_name, { group: group === "" ? null : group, account });
+    const s = await cx.waitFor(session.name, (x) => x.state !== "starting", { timeoutMs: 20_000 }).catch(() => cx.get(session.name) ?? session);
+    if (s.state === "starting") return stalled(s);
+    return json({ ...brief(s), forked });
+  }));
+
   server.registerTool("rename_session", {
     title: "Rename a session",
     description: "Give a session a new name. A running session keeps running (and keeps its conversation); fails with EXISTS if the name is taken.",

@@ -139,5 +139,8 @@ export function fmtAge(secs: number): string {
   const s = Math.max(0, Math.floor(secs));
   if (s < 60) return `${s}s`;
   if (s < 3600) return `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s`;
-  return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h${String(Math.floor((s % 3600) / 60)).padStart(2, "0")}m`;
+  // At most 6 characters up to 999 days: the dashboard gives the age a fixed-width column.
+  const d = Math.floor(s / 86400);
+  return d < 100 ? `${d}d${String(Math.floor((s % 86400) / 3600)).padStart(2, "0")}h` : `${d}d`;
 }

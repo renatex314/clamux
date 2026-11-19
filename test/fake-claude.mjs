@@ -12,7 +12,8 @@ if (process.env.FAKE_NO_TRANSCRIPT !== "1") fs.writeFileSync(transcript, "");
 const hook = (event) =>
   spawnSync(process.execPath, [process.env.CLAMUX_CLI, "hook"], {
     input: JSON.stringify({
-      hook_event_name: event, session_id: "fake-1", cwd: process.cwd(),
+      // --fork-session: like Claude, the forked conversation gets an id of its own.
+      hook_event_name: event, session_id: process.argv.includes("--fork-session") ? `fake-fork-${process.pid}` : "fake-1", cwd: process.cwd(),
       tool_name: "Bash", transcript_path: transcript,
     }),
     env: process.env,

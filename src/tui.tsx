@@ -1,12 +1,12 @@
 import type { EventEmitter } from "node:events";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Box, Text, render, useApp, useInput, usePaste, useStdin, useStdout } from "ink";
 import TextInput from "ink-text-input";
 import { fmtAge, markSeen, snapshot, type DisplayState, type Row } from "./status.js";
 import { attachSession, createPrefixFilter } from "./attach.js";
 import { DirPicker } from "./dirpicker.js";
 import {
-  capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, moveSession, openInput, pasteInto, readAccounts, renameSession, readFolded,
+  capturePane, cleanStale, createSession, forgetSession, killSession, liveSessions, moveSession, cloneSession, openInput, pasteInto, readAccounts, renameSession, readFolded,
   readGroups, removeGroup, writeFolded, resumeSession, sendPrompt, setGroup, validName, type Agent, type Group,
 } from "./sessions.js";
 
@@ -30,6 +30,7 @@ type Mode =
   | { kind: "keys"; name: string }
   | { kind: "send"; name: string }
   | { kind: "rename"; name: string }
+  | { kind: "clone"; name: string }
   | { kind: "confirm"; question: string; run: () => void | Promise<void> };
 
 interface Action { attach: string }
@@ -113,7 +114,16 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
   const pickable = items.map((it, i) => (it.kind === "label" ? -1 : i)).filter((i) => i >= 0);
 
   const found = items.findIndex((it) => it.kind !== "label" && keyOfItem(it) === selKey);
-  const idx = found >= 0 ? found : (pickable[0] ?? -1);
+  // When the selected line goes away (deleted, cleaned up, moved out of view), stay at the same place in the
+  // list: the line that took its spot, or the one before it if it was the last.
+  const lastIdx = useRef(0);
+  const idx = found >= 0
+    ? found
+    : (pickable.find((i) => i >= lastIdx.current) ?? pickable[pickable.length - 1] ?? -1);
+  lastIdx.current = Math.max(0, idx);
+  useEffect(() => {
+    if (found < 0 && idx >= 0) setSelKey(keyOfItem(items[idx] as Item));
+  }, [found, idx]);
   const cur = items[idx];
   const sel = cur?.kind === "session" ? cur.row : undefined;
   const selGroup = cur?.kind === "group" ? cur.name : undefined;
@@ -232,6 +242,10 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
         if (!sel.live) return setMsg(`'${sel.name}' is not running`);
         setMsg(""); return setMode({ kind: "keys", name: sel.name });
       }
+      if (ch === "C" && sel) {
+        if (sel.agent !== "claude") return setMsg("agy sessions cannot be cloned");
+        setMsg(""); setInput(""); return setMode({ kind: "clone", name: sel.name });
+      }
       if (ch === "," && sel) { // tmux's rename key
         setMsg(""); setInput(sel.name); return setMode({ kind: "rename", name: sel.name });
       }
@@ -333,6 +347,14 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
       setInput(""); setMsg("");
       return setMode({ kind: "group-dir", name: v });
     }
+    if (mode.kind === "clone") {
+      const from = mode.name;
+      setMsg(`cloning '${from}'...`);
+      const r = await cloneSession(from, v || undefined);
+      if (r.ok) setSelName(r.name);
+      toList(r.ok ? (r.forked ? `cloned '${from}' as '${r.name}' - Enter to attach` : `'${from}' had no conversation yet; started '${r.name}' fresh`) : r.error);
+      return refresh();
+    }
     if (mode.kind === "rename") {
       if (!v || v === mode.name) return toList();
       const from = mode.name;
@@ -369,43 +391,45 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
 
   return (
     <Box flexDirection="column" height={termRows - 1}>
-      <Box>
-        <Text bold color="cyan">clamux</Text>
-        <Text dimColor>  {rows.length} session{rows.length === 1 ? "" : "s"}</Text>
-        {counts.map(([s, c, n]) => (
-          <Text key={s} color={c}>  {n} {s}</Text>
-        ))}
+      <Box height={1} overflow="hidden">
+        <Text wrap="truncate-end">
+          <Text bold color="cyan">clamux</Text>
+          <Text dimColor>  {rows.length} session{rows.length === 1 ? "" : "s"}</Text>
+          {counts.map(([s, c, n]) => (
+            <Text key={s} color={c}>  {n} {s}</Text>
+          ))}
+        </Text>
       </Box>
 
-      <Box height={bodyH}>
-        <Box flexDirection="column" width={leftW} flexShrink={0} borderStyle="round" borderColor="gray" paddingX={1}>
+      <Box height={bodyH} flexShrink={0} overflow="hidden">
+        <Box flexDirection="column" width={leftW} flexShrink={0} borderStyle="round" borderColor="gray" paddingX={1} overflow="hidden">
           {items.length === 0 && <Text dimColor>No sessions. Press n to create one, g for a group.</Text>}
           {items.slice(top, top + listH).map((it, i) => {
             const on = top + i === idx;
-            if (it.kind === "label") return <Text key="label" dimColor>  ─ {it.text} ─</Text>;
+            if (it.kind === "label") return <Box key="label" height={1} flexShrink={0}><Text dimColor wrap="truncate-end">  ─ {it.text} ─</Text></Box>;
             if (it.kind === "group") {
               return (
-                <Box key={`g:${it.name}`}>
-                  <Text color="blue" bold={on} inverse={on}>{it.folded ? "▸" : "▾"} {it.name}</Text>
-                  <Text dimColor> ({it.count})</Text>
+                <Box key={`g:${it.name}`} height={1} flexShrink={0}>
+                  <Box flexShrink={1}><Text color="blue" bold={on} inverse={on} wrap="truncate-end">{it.folded ? "▸" : "▾"} {it.name}</Text></Box>
+                  <Box flexShrink={0}><Text dimColor> ({it.count})</Text></Box>
                 </Box>
               );
             }
             const r = it.row;
             return (
-              <Box key={r.name}>
-                <Text color={colorOf(r)}>{it.indent ? "  " : ""}{on ? "▸" : " "}● </Text>
+              <Box key={r.name} height={1} flexShrink={0}>
+                <Box flexShrink={0}><Text color={colorOf(r)}>{it.indent ? "  " : ""}{on ? "▸" : " "}● </Text></Box>
                 <Box flexGrow={1} flexShrink={1} marginRight={1}>
                   <Text bold={on || r.unread} wrap="truncate-end">{r.name}</Text>
                 </Box>
-                <Box width={9} flexShrink={0}><Text color={colorOf(r)} bold={r.unread}>{stateOf(r)}</Text></Box>
-                <Box width={6} flexShrink={0} justifyContent="flex-end"><Text dimColor>{fmtAge(r.ageS)}</Text></Box>
+                <Box width={9} flexShrink={0}><Text color={colorOf(r)} bold={r.unread} wrap="truncate">{stateOf(r)}</Text></Box>
+                <Box width={6} flexShrink={0} justifyContent="flex-end"><Text dimColor wrap="truncate">{fmtAge(r.ageS)}</Text></Box>
               </Box>
             );
           })}
         </Box>
 
-        <Box flexDirection="column" flexGrow={1} flexShrink={1} width={0} borderStyle="round"
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} width={0} borderStyle="round" overflow="hidden"
           borderColor={mode.kind === "keys" ? "magenta" : mode.kind === "new-dir" || mode.kind === "group-dir" ? "cyan" : "gray"}
           paddingX={1}>
           {mode.kind === "new-dir" ? (
@@ -483,7 +507,7 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
           <Text dimColor wrap="truncate-end">
             {selGroup
               ? "↑↓ select  ⏎ fold  n new session here  u new from id  e edit group  d delete group  g new group  q quit"
-              : "↑↓ select  ⏎ attach (Ctrl-b d: back)  i keys  n new  u new from id  r resume  s send  , rename  x kill  d delete  m move to group  g new group  c clean  q quit"}
+              : "↑↓ select  ⏎ attach (Ctrl-b d: back)  i keys  n new  u new from id  r resume  s send  C clone  , rename  x kill  d delete  m move to group  g new group  c clean  q quit"}
           </Text>
         )}
         {mode.kind === "group-dir" && (
@@ -513,13 +537,15 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
             ↑↓ move  ⏎/→ open  ⏎ on ✓ use it  ←/⌫ parent  type to filter  Tab agent  Esc cancel
           </Text>
         )}
-        {(mode.kind === "new-name" || mode.kind === "new-id" || mode.kind === "send" || mode.kind === "group-name" || mode.kind === "rename") && (
+        {(mode.kind === "new-name" || mode.kind === "new-id" || mode.kind === "send" || mode.kind === "group-name" || mode.kind === "rename" || mode.kind === "clone") && (
           <Box>
             <Text color="cyan">
               {mode.kind === "group-name"
                 ? "new group name: "
                 : mode.kind === "rename"
                   ? `rename '${mode.name}' to: `
+                : mode.kind === "clone"
+                  ? `clone '${mode.name}' as (Enter: ${mode.name}-clone): `
                 : mode.kind === "new-name"
                   ? `new ${newAgent} session${mode.group ? ` in '${mode.group}'` : ""}${accountTag}${mode.then === "id" ? ", continuing a conversation" : ""} - name (Tab: agent${accountKeys}): `
                   : mode.kind === "new-id"
@@ -529,8 +555,8 @@ function App({ onAction }: { onAction: (a: Action) => void }) {
             <TextInput value={input} onChange={setInput} onSubmit={submit} />
           </Box>
         )}
-        {mode.kind === "confirm" && <Text color="yellow">{mode.question} (y/n)</Text>}
-        <Text color="yellow">{msg || " "}</Text>
+        {mode.kind === "confirm" && <Text color="yellow" wrap="truncate-end">{mode.question} (y/n)</Text>}
+        <Text color="yellow" wrap="truncate-end">{msg || " "}</Text>
       </Box>
     </Box>
   );

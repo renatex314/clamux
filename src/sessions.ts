@@ -200,6 +200,80 @@ function withoutConversationArgs(args: string[]): string[] {
   return out;
 }
 
+export type CloneResult = { ok: true; name: string; forked: boolean } | Extract<Result, { ok: false }>;
+
+/** `<name>-clone`, or `<name>-clone-2`, `-3`... if taken; shortened to fit the name limit. */
+function cloneName(name: string): string {
+  const taken = (n: string) => liveSessions().has(n) || readSaved(n) !== null || readStatus(n) !== null;
+  for (let i = 1; ; i++) {
+    const suffix = i === 1 ? "-clone" : `-clone-${i}`;
+    const n = name.slice(0, 32 - suffix.length) + suffix;
+    if (!taken(n)) return n;
+  }
+}
+
+/**
+ * Starts a new session that begins with everything the source session's conversation holds so far and then goes its
+ * own way (`claude --resume <id> --fork-session`: a new conversation id, so neither one sees the other's messages).
+ * The source can be in any state, running or not; it is only read, never interrupted, and the clone sees what its
+ * transcript holds at that moment. It takes the source's directory, agent, arguments, notifications, group and
+ * account, unless `group` / `account` say otherwise (`null` / `""`: none / the default login). A source that never
+ * had a conversation gives a fresh session with the same settings (`forked: false`). agy cannot fork a conversation.
+ */
+export async function cloneSession(
+  name: string, to?: string, opts: { group?: string | null; account?: string | null } = {},
+): Promise<CloneResult> {
+  type Fail = Extract<Result, { ok: false }>;
+  const sv = readSaved(name);
+  if (!sv) return fail("NOT_FOUND", `no session '${name}'`) as Fail;
+  const agent: Agent = sv.agent ?? "claude";
+  if (agent !== "claude") {
+    return fail("INVALID", `'${name}' is an agy session; agy has no way to fork a conversation, so it cannot be cloned`) as Fail;
+  }
+  const newName = to?.trim() || cloneName(name);
+  if (!validName(newName)) return fail("INVALID", "name may only contain letters, digits, - and _ (max 32 characters)") as Fail;
+  if (liveSessions().has(newName) || readSaved(newName) || readStatus(newName)) {
+    return fail("EXISTS", `a session named '${newName}' already exists`) as Fail;
+  }
+  const group = opts.group === undefined ? sv.group ?? null : opts.group || null;
+  if (group && !readGroups()[group]) return fail("NOT_FOUND", `no group '${group}'`) as Fail;
+  const accounts = readAccounts();
+  const account = opts.account === undefined ? sv.account ?? null : opts.account || null;
+  if (account && !accounts[account]) return fail("NOT_FOUND", `no account '${account}' (clamux account ls)`) as Fail;
+  if (!fs.existsSync(sv.cwd) || !fs.statSync(sv.cwd).isDirectory()) return fail("INVALID", `directory is gone: ${sv.cwd}`) as Fail;
+
+  const sourceId = sv.sessionId;
+  const transcript = sv.transcriptPath && fs.existsSync(sv.transcriptPath) ? sv.transcriptPath : null;
+  const forked = Boolean(sourceId && transcript);
+  if (forked && account !== (sv.account ?? null)) {
+    // Another account keeps its conversations in its own config directory: give it a copy to fork from.
+    const configDir = account ? (accounts[account] as Account).dir : defaultClaudeDir();
+    const dest = path.join(configDir, "projects", path.basename(path.dirname(transcript as string)), path.basename(transcript as string));
+    try {
+      if (!fs.existsSync(dest)) {
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(transcript as string, dest);
+      }
+    } catch (e) {
+      return fail("INVALID", `could not copy the conversation to account ${account ?? "default"}: ${e instanceof Error ? e.message : String(e)}`) as Fail;
+    }
+  }
+  const args = forked
+    ? [...withoutConversationArgs(sv.claudeArgs).filter((a) => a !== "--fork-session"), "--resume", sourceId as string, "--fork-session"]
+    : sv.claudeArgs;
+  // No conversation id yet: the fork gets a new one, which the clone's first hook records.
+  writeSaved(newName, {
+    cwd: sv.cwd, agent, claudeArgs: sv.claudeArgs, notify: sv.notify, sessionId: null, transcriptPath: null, group, account,
+    savedAt: Date.now() / 1000,
+  });
+  const r = await startHost(newName, sv.cwd, agent, args, sv.notify, account);
+  if (!r.ok) {
+    removeSaved(newName);
+    return r as Fail;
+  }
+  return { ok: true, name: newName, forked };
+}
+
 export type ResumeResult = { ok: true; resumed: boolean } | Extract<Result, { ok: false }>;
 
 /**

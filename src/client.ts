@@ -5,7 +5,7 @@ import { attachSession } from "./attach.js";
 import { lastAnswer } from "./transcript.js";
 import {
   accountEmail, accountMembers, addAccount, capturePane, cleanStale, createSession, fetchScreen, forgetSession,
-  groupMembers, killSession, liveSessions, moveSession, pressKeys, readAccounts, readGroups, removeAccount, removeGroup, renameSession,
+  cloneSession, groupMembers, killSession, liveSessions, moveSession, pressKeys, readAccounts, readGroups, removeAccount, removeGroup, renameSession,
   resumeSession, sendPrompt, setGroup, type Agent, type Group, type Result,
 } from "./sessions.js";
 
@@ -278,6 +278,21 @@ export class Clamux {
     const r = await resumeSession(name);
     if (!r.ok) throw new ClamuxError(r.code, r.error);
     return { session: this.require(name), resumed: r.resumed };
+  }
+
+  /**
+   * Starts a new session with everything `name`'s conversation holds so far, which then goes its own way (neither
+   * sees the other's later messages); `name` is not interrupted. It takes `name`'s directory, agent, arguments, group
+   * and account unless `group` / `account` say otherwise (`null` / `""`: none / the default login). The new name
+   * defaults to `<name>-clone`. `forked` is false if `name` never had a conversation (the clone then starts fresh).
+   * Throws INVALID for agy sessions, which cannot fork a conversation.
+   */
+  async clone(
+    name: string, to?: string, opts: { group?: string | null; account?: string | null } = {},
+  ): Promise<{ session: Session; forked: boolean }> {
+    const r = await cloneSession(name, to, opts);
+    if (!r.ok) throw new ClamuxError(r.code, r.error);
+    return { session: this.require(r.name), forked: r.forked };
   }
 
   /** Renames a session, running or not; a running one keeps running. Throws EXISTS if the new name is taken. */
